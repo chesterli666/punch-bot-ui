@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>部門班表</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root{
+    --bg:#0b1014; --card:#111a20; --line:#1f6f3f; --line-soft:#22303a;
+    --fg:#e8f2ec; --dim:#7d9a8b; --accent:#22c55e; --warn:#f59e0b;
+    --title:#f97316; --we:#1a1420; --hol:#2a1618; --today:#2563eb;
+    --head:#16232b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+       -webkit-tap-highlight-color:transparent;padding:10px 0 10px}
+  h1{margin:.1em 10px .1em;font-size:1.2rem;text-align:center;color:var(--title)}
+  .sub{text-align:center;color:var(--dim);font-size:.78rem;margin-bottom:8px}
+  .tools{display:flex;gap:8px;padding:0 10px 8px}
+  input[type=search]{flex:1;min-width:0;padding:8px 12px;border-radius:8px;background:#16222a;
+    color:var(--fg);border:1px solid var(--line-soft);font-family:inherit;font-size:.9rem}
+  .btn{border:1px solid var(--line-soft);background:#16222a;color:var(--dim);border-radius:8px;
+       padding:8px 12px;font-family:inherit;font-size:.82rem;cursor:pointer;white-space:nowrap}
+  .btn.on{border-color:var(--accent);color:var(--accent)}
+
+  /* 橫向捲動的網格：姓名欄與表頭都固定，捲到 30 號還看得到是誰 */
+  .wrap{overflow:auto;border-top:1px solid var(--line-soft);border-bottom:1px solid var(--line-soft);
+        max-height:78vh;-webkit-overflow-scrolling:touch}
+  table{border-collapse:separate;border-spacing:0;font-size:.72rem}
+  th,td{border-right:1px solid #1b2831;border-bottom:1px solid #1b2831;padding:0}
+  thead th{position:sticky;top:0;z-index:2;background:var(--head);color:var(--dim);
+           font-weight:500;height:34px;min-width:30px;text-align:center}
+  thead tr.cnt th{top:34px;height:18px;font-size:.66rem;color:var(--accent);z-index:2}
+  th.nm{position:sticky;left:0;z-index:3;background:var(--card);text-align:left;
+        padding:4px 8px;min-width:92px;max-width:92px;color:var(--fg);font-weight:500}
+  thead th.nm{z-index:4}
+  th.nm small{display:block;color:var(--dim);font-size:.62rem;font-weight:400}
+  td{height:30px;min-width:30px;text-align:center;vertical-align:middle}
+  .we{background:var(--we)} .hol{background:var(--hol)}
+  thead .hol{color:#fca5a5}
+  .td{box-shadow:inset 0 0 0 2px var(--today)}
+  .hn{display:block;font-size:.55rem;color:#fca5a5;line-height:1.1}
+  .bd{display:inline-block;color:#fff;font-size:.6rem;line-height:1;padding:3px 4px;
+      border-radius:10px;margin:1px 0;max-width:28px;overflow:hidden;white-space:nowrap}
+  .bd.rd{border-radius:50%;padding:4px 3px}
+  tr.hit th.nm{color:var(--accent)}
+  /* 檢視切換 */
+  .views{display:flex;gap:6px;justify-content:center;padding:0 10px 8px}
+  .vb{flex:1;border:1px solid var(--line-soft);background:#16222a;color:var(--dim);
+      border-radius:8px;padding:7px 0;font-family:inherit;font-size:.8rem;cursor:pointer}
+  .vb.on{border-color:var(--accent);color:var(--accent);background:#132a1e}
+
+  /* 月曆檢視：7×5 一屏看完整月 */
+  .calwrap{padding:0 8px}
+  table.cal{width:100%;table-layout:fixed;border-spacing:3px;border-collapse:separate}
+  table.cal th{background:transparent;position:static;height:auto;color:var(--dim);
+               font-size:.72rem;padding-bottom:2px;border:0}
+  table.cal th.wehead{color:var(--accent)}
+  table.cal td{border:0;height:auto;min-width:0}
+  .cc{position:relative;min-height:62px;border-radius:8px;background:#16222a;
+      padding:3px 2px 2px;cursor:pointer;overflow:hidden}
+  .cc.blank{background:transparent;min-height:62px;cursor:default}
+  .cc.we{background:#191426} .cc.hol{background:#241519}
+  .cc .dn{position:absolute;top:2px;left:4px;font-size:.68rem;color:var(--dim)}
+  .cc .cn{position:absolute;top:1px;right:3px;font-size:.72rem;font-weight:700;color:var(--warn)}
+  .cc .nm3{display:block;margin-top:14px;font-size:.54rem;line-height:1.35;color:var(--fg);
+           text-align:center;word-break:break-all}
+  .cc .hn{font-size:.5rem}
+
+  /* 逐日檢視：一列一天 */
+  table.dayt th.dh{position:sticky;left:0;z-index:3;background:var(--card);min-width:52px;
+                   max-width:52px;font-size:.7rem;padding:3px 4px;text-align:left;cursor:pointer}
+  table.dayt th.dc{position:sticky;left:52px;z-index:3;background:var(--card);min-width:24px;
+                   font-size:.7rem;color:var(--warn);text-align:center}
+  table.dayt thead th.dh,table.dayt thead th.dc{z-index:4;top:0}
+  table.dayt th.dh small{color:var(--dim);font-size:.6rem}
+  /* 欄頭橫排縮寫：英文名直排要逐字母讀，很難認 */
+  th.pv{height:30px;width:var(--colw);min-width:var(--colw);max-width:var(--colw);
+        font-size:.66rem;padding:4px 0;text-align:center;color:var(--fg);cursor:pointer;
+        letter-spacing:-.02em;overflow:hidden}
+  table.dayt td{width:var(--colw);min-width:var(--colw);max-width:var(--colw);height:26px}
+  .who{margin-top:6px;display:flex;flex-wrap:wrap;gap:2px 10px;font-size:.66rem}
+  .who b{color:var(--fg);margin-right:3px}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin:0 1px}
+
+  .legend{padding:10px 12px;font-size:.7rem;color:var(--dim);line-height:1.8}
+  .plist{margin-top:8px;max-height:38vh;overflow:auto}
+  .pl{padding:3px 0;border-top:1px solid var(--line-soft)}
+  .pn{display:inline-block;min-width:7.5em;color:var(--fg)}
+  .err{padding:28px;text-align:center;color:var(--warn);line-height:2}
+  .pop{position:fixed;left:10px;right:10px;bottom:10px;background:var(--card);
+       border:1px solid var(--line);border-radius:12px;padding:12px 14px;font-size:.82rem;
+       box-shadow:0 8px 30px #000a;display:none}
+  .pop.show{display:block}
+  .pop b{color:var(--accent)}
+  .pop .x{float:right;color:var(--dim);cursor:pointer;padding:0 4px}
+</style>
+</head>
+<body>
+<div id="app"><div class="sub">載入中…</div></div>
+<div class="pop" id="pop"></div>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+/* 部門一個月的資料 base64 要 7KB，塞不進網址，所以走 zlib 壓縮（#z=）。
+   #d= 是未壓縮版，兩種都吃。fragment 不會送到伺服器，內容不進任何 access log。 */
+function b64bytes(s) {
+  const b = atob(s.replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(b, c => c.charCodeAt(0));
+}
+
+async function readPayload() {
+  const z = location.hash.match(/[#&]z=([^&]+)/);
+  if (z) {
+    if (!window.DecompressionStream) throw new Error('NO_DS');
+    const ds = new DecompressionStream('deflate');
+    const buf = await new Response(new Blob([b64bytes(z[1])]).stream().pipeThrough(ds)).arrayBuffer();
+    return JSON.parse(new TextDecoder().decode(buf));
+  }
+  const d = location.hash.match(/[#&]d=([^&]+)/);
+  if (!d) return null;
+  return JSON.parse(new TextDecoder().decode(b64bytes(d[1])));
+}
+
+const WD = ['日', '一', '二', '三', '四', '五', '六'];
+/* 三個檢視共用同一份資料、同一個網址，在頁面上切換，不用回 Telegram 重開：
+   cal ＝月曆（一屏看完整月，回答「哪天人少」）
+   day ＝逐日（往下捲，回答「這天誰在」「某人怎麼排」）
+   grid＝原本的橫向網格（詳細模式，桌機／橫置手機最完整） */
+let D = null, onlyOff = false, q = '', view = 'cal';
+
+/* 「rex.liao」→「rex」：格子窄，只放得下名不放姓 */
+const shortName = n => (n || '').split('.')[0];
+
+/* 逐日檢視的欄頭：算出「能彼此區分的最短前綴」。
+   英文名直排要逐字母讀，很難認；橫排又只有約 30px。折衷是橫排＋縮寫，
+   但固定砍 3 個字會讓 karen/kun 這種撞在一起，所以長度用算的：
+   從 2 開始加長，直到這個部門裡沒有兩個人的縮寫相同為止。 */
+function abbrevMap(people) {
+  const full = people.map(r => shortName(r.n));
+  // 從 3 起跳：2 個字雖然也能區分，但「ne」「br」根本認不出是誰，讀不出來就沒意義
+  let len = 3;
+  for (; len <= 8; len++) {
+    const cut = full.map(n => n.slice(0, len));
+    if (new Set(cut).size === cut.length) break;
+  }
+  const map = {};
+  people.forEach((r, i) => { map[r.n] = full[i].slice(0, len); });
+  return map;
+}
+
+/* 某天休假的人（回傳 [{r, marks}]） */
+function offOn(d) {
+  const k = String(d), out = [];
+  for (const r of D.rows) {
+    const marks = r.c[k];
+    if (marks && marks.length) out.push({ r, marks });
+  }
+  return out;
+}
+
+async function init() {
+  let err = null;
+  try { D = await readPayload(); } catch (e) { err = e.message; D = null; }
+  if (!D) {
+    // 沒有 DecompressionStream 的舊 WebView：老實說明並指回既有的圖片版，不要假裝沒事
+    document.getElementById('app').innerHTML = err === 'NO_DS'
+      ? '<div class="err">你的 Telegram 內建瀏覽器太舊，無法解壓縮這份資料。<br>' +
+        '請更新 Telegram / 系統，或改用 <b>/dept_grid</b> 的圖片版。</div>'
+      : '<div class="err">缺少班表資料。<br>請回 Telegram 重新開啟。</div>';
+    return;
+  }
+  render();
+}
+
+function dayMeta(d) {
+  const y = +D.m.slice(0, 4), mo = +D.m.slice(5, 7);
+  const w = new Date(y, mo - 1, d).getDay();
+  const holName = D.hol ? D.hol[d] : undefined;
+  const isHol = holName !== undefined;
+  const t = new Date();
+  const isToday = (t.getFullYear() === y && t.getMonth() + 1 === mo && t.getDate() === d);
+  return { w, isHol, holName, isToday, isWe: w === 0 || w === 6 };
+}
+
+function dayList() {
+  const a = [];
+  for (let d = 1; d <= D.days; d++) a.push(d);
+  return a;
+}
+
+function shell(tools, main) {
+  return `
+    <h1>${D.g}　${D.m} 班表</h1>
+    <div class="sub">${D.rows.length} 人　·　更新於 ${D.f}</div>
+    <div class="views">
+      ${[['cal', '📅 月曆'], ['day', '📆 逐日'], ['grid', '▦ 網格']].map(([v, t]) =>
+        `<button class="vb${view === v ? ' on' : ''}" data-v="${v}">${t}</button>`).join('')}
+    </div>
+    ${tools}${main}`;
+}
+
+function bindShell() {
+  document.querySelectorAll('.vb').forEach(el =>
+    el.addEventListener('click', () => { view = el.dataset.v; closePop(); render(); }));
+}
+
+function render() {
+  closePop();
+  if (view === 'cal') return renderCal();
+  if (view === 'day') return renderDay();
+  renderGrid();
+}
+
+/* ── 月曆檢視：7×5，一屏看完整月 ───────────────────────────── */
+function renderCal() {
+  const y = +D.m.slice(0, 4), mo = +D.m.slice(5, 7);
+  const first = new Date(y, mo - 1, 1).getDay();
+  // 熱度只用**平日**當基準：週末假日本來就全員休假，一起算的話橘色會被週末洗版，
+  // 真正要注意的平日排休反而看不出來。週末/假日照樣顯示人數，但不上熱度色。
+  const max = Math.max(1, ...dayList()
+    .filter(d => { const m = dayMeta(d); return !m.isWe && !m.isHol; })
+    .map(d => D.cnt[d - 1] || 0));
+
+  const cells = [];
+  for (let i = 0; i < first; i++) cells.push(null);
+  for (const d of dayList()) cells.push(d);
+  while (cells.length % 7) cells.push(null);
+
+  let rows = '';
+  for (let i = 0; i < cells.length; i += 7) {
+    rows += '<tr>' + cells.slice(i, i + 7).map(d => {
+      if (d === null) return '<td><div class="cc blank"></div></td>';
+      const m = dayMeta(d), n = D.cnt[d - 1] || 0;
+      const who = offOn(d);
+      const names = who.slice(0, 3).map(x => shortName(x.r.n)).join('<br>')
+        + (who.length > 3 ? `<br>+${who.length - 3}` : '');
+      const c = ['cc'];
+      if (m.isWe) c.push('we');
+      if (m.isHol) c.push('hol');
+      if (m.isToday) c.push('td');
+      // 底色深淺＝平日休假人數，排班前找「哪天擠」用看的就知道
+      const heat = !m.isWe && !m.isHol && n;
+      const a = heat ? (0.16 + 0.54 * Math.min(1, n / max)).toFixed(2) : 0;
+      return `<td><div class="${c.join(' ')}" data-d="${d}"
+        style="${heat ? `background:rgba(245,158,11,${a})` : ''}">
+        <span class="dn">${d}</span>${n ? `<span class="cn">${n}</span>` : ''}
+        <span class="nm3">${names}</span>
+        ${m.holName ? `<span class="hn">${m.holName}</span>` : ''}</div></td>`;
+    }).join('') + '</tr>';
+  }
+
+  document.getElementById('app').innerHTML = shell('', `
+    <div class="calwrap">
+      <table class="cal">
+        <thead><tr>${WD.map((w, i) =>
+          `<th class="${i === 0 || i === 6 ? 'wehead' : ''}">${w}</th>`).join('')}</tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div class="legend">
+      數字右上＝當日休假人數；名字＝休假的人（最多列 3 個）<br>
+      <b>橘底＝平日排休，愈橘人愈多</b>（週末假日本來就全員休假，不上色以免蓋掉平日訊號）<br>
+      紫底＝週末、紅底＝假日、藍框＝今天；點某天看完整名單。<br>
+      此頁唯讀，只是把本機快取畫出來，不會連公司系統。
+    </div>`);
+  bindShell();
+  document.querySelectorAll('.cc[data-d]').forEach(el =>
+    el.addEventListener('click', () => popDay(+el.dataset.d)));
+}
+
+/* ── 逐日檢視：日期往下捲，人是欄 ──────────────────────────── */
+function renderDay() {
+  const people = D.rows.filter(r => !q || r.n.toLowerCase().includes(q));
+  const ab = abbrevMap(people);
+  // 欄寬照人數縮：日期欄 52＋人數欄 24，剩下的平分，人多就窄一點但不橫向捲
+  const colW = Math.max(22, Math.min(40,
+    Math.floor((document.documentElement.clientWidth - 84) / Math.max(1, people.length))));
+  const head = people.map((r, pi) =>
+    `<th class="pv" data-pi="${pi}" title="${r.n}">${ab[r.n]}</th>`).join('');
+
+  const body = dayList().filter(d => !onlyOff || (D.cnt[d - 1] || 0)).map(d => {
+    const m = dayMeta(d), c = [];
+    if (m.isWe) c.push('we');
+    if (m.isHol) c.push('hol');
+    if (m.isToday) c.push('td');
+    const cells = people.map((r, pi) => {
+      const marks = r.c[String(d)] || [];
+      const dots = marks.map(([txt, color]) =>
+        `<span class="dot" style="background:${color}" title="${txt}"></span>`).join('');
+      return `<td class="${c.join(' ')}" data-p="${pi}" data-d="${d}">${dots}</td>`;
+    }).join('');
+    return `<tr><th class="dh ${c.join(' ')}">${String(d).padStart(2, '0')}
+      <small>(${WD[m.w]})</small>${m.holName ? `<span class="hn">${m.holName}</span>` : ''}</th>
+      <th class="dc ${c.join(' ')}">${D.cnt[d - 1] || ''}</th>${cells}</tr>`;
+  }).join('');
+
+  document.getElementById('app').innerHTML = shell(tools(), `
+    <div class="wrap">
+      <table class="dayt" style="--colw:${colW}px">
+        <thead><tr><th class="dh">日</th><th class="dc">休</th>${head}</tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+    <div class="legend">
+      一列一天，往下捲就是整個月；「休」欄＝當日休假人數。<br>
+      色點＝休假（綠＝特休、橘＝病假、藍＝其他）或異動班別。點格子看細節、點欄頭看是誰。<br>
+      <div class="who">${people.map(r =>
+        `<span><b>${ab[r.n]}</b>${r.n}</span>`).join('')}</div>
+    </div>`);
+  bindShell(); bindTools();
+  document.querySelectorAll('.dayt td[data-p]').forEach(el =>
+    el.addEventListener('click', () => popup(people[+el.dataset.p], +el.dataset.d)));
+  document.querySelectorAll('th.pv[data-pi]').forEach(el =>
+    el.addEventListener('click', () => popPerson(people[+el.dataset.pi])));
+  document.querySelectorAll('.dayt th.dh').forEach(el => {
+    const d = parseInt(el.textContent, 10);
+    if (d) el.addEventListener('click', () => popDay(d));
+  });
+}
+
+function tools() {
+  return `<div class="tools">
+      <input type="search" id="q" placeholder="搜尋姓名…" value="${q}">
+      <button class="btn${onlyOff ? ' on' : ''}" id="of">只看有假</button>
+    </div>`;
+}
+
+function bindTools() {
+  const qi = document.getElementById('q');
+  if (!qi) return;
+  qi.addEventListener('input', () => {
+    q = qi.value.trim().toLowerCase();
+    const at = qi.selectionStart;
+    render();
+    const n = document.getElementById('q');
+    if (n) { n.focus(); n.setSelectionRange(at, at); }
+  });
+  const of = document.getElementById('of');
+  if (of) of.addEventListener('click', () => { onlyOff = !onlyOff; render(); });
+}
+
+/* ── 原本的橫向網格（詳細模式）─────────────────────────────── */
+function renderGrid() {
+  const days = dayList();
+
+  const rows = D.rows.filter(r =>
+    (!q || r.n.toLowerCase().includes(q)) &&
+    (!onlyOff || Object.keys(r.c).length));
+
+  const cls = d => {
+    const m = dayMeta(d), c = [];
+    if (m.isWe) c.push('we');
+    if (m.isHol) c.push('hol');
+    if (m.isToday) c.push('td');
+    return c.join(' ');
+  };
+
+  const head = days.map(d => {
+    const m = dayMeta(d);
+    return `<th class="${cls(d)}">${String(d).padStart(2, '0')}<br>
+      <small>(${WD[m.w]})</small>${m.holName ? `<span class="hn">${m.holName}</span>` : ''}</th>`;
+  }).join('');
+
+  const cntRow = days.map((d, i) =>
+    `<th class="cnt ${cls(d)}">${D.cnt[i] || ''}</th>`).join('');
+
+  const body = rows.map((r, ri) => {
+    const cells = days.map(d => {
+      const marks = (r.c[String(d)] || []).map(([txt, color, shape]) =>
+        `<span class="bd${shape === 1 && txt.length <= 2 ? ' rd' : ''}" style="background:${color}">${txt}</span>`
+      ).join('');
+      return `<td class="${cls(d)}" data-r="${ri}" data-d="${d}">${marks}</td>`;
+    }).join('');
+    return `<tr><th class="nm">${r.n}${r.t ? `<small>${r.t}</small>` : ''}</th>${cells}</tr>`;
+  }).join('');
+
+  document.getElementById('app').innerHTML = shell(tools(), `
+    <div class="wrap">
+      <table>
+        <thead>
+          <tr><th class="nm">姓名<small>(班別時間)</small></th>${head}</tr>
+          <tr class="cnt"><th class="nm">當日休假人數</th>${cntRow}</tr>
+        </thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+    <div class="legend">
+      圓標＝整天休假（綠＝特休、橘＝病假、藍＝其他）；方標＝半天假（標時數）或異動班別<br>
+      藍框＝今天；紫底＝週末；紅底＝假日；表頭第二列＝當日休假人數<br>
+      點格子看細節。此頁唯讀，只是把本機快取畫出來，不會連公司系統。
+    </div>`);
+
+  bindShell(); bindTools();
+  document.querySelectorAll('.wrap td[data-r]').forEach(el =>
+    el.addEventListener('click', () => popup(rows[+el.dataset.r], +el.dataset.d)));
+}
+
+function dayTitle(d) {
+  const m = dayMeta(d);
+  const why = [m.holName, m.isHol && !m.holName ? '公司休日' : '', m.isWe ? '週末' : '']
+    .filter(Boolean).join('、');
+  return `${D.m}-${String(d).padStart(2, '0')}（${WD[m.w]}）${why ? '　' + why : ''}`;
+}
+
+function showPop(html) {
+  const pop = document.getElementById('pop');
+  pop.innerHTML = `<span class="x" id="popx">✕</span>${html}`;
+  pop.classList.add('show');
+  // 彈窗是固定在底部的，會蓋住最後幾列 → 撐開頁尾，捲得到被蓋住的內容
+  document.body.style.paddingBottom = (pop.offsetHeight + 24) + 'px';
+  document.getElementById('popx').addEventListener('click', closePop);
+  if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+}
+
+function closePop() {
+  const pop = document.getElementById('pop');
+  if (pop) pop.classList.remove('show');
+  document.body.style.paddingBottom = '';
+}
+
+/* 單一格：某人某天 */
+function popup(r, d) {
+  const marks = r.c[String(d)] || [];
+  const tags = marks.length
+    ? marks.map(([t, c]) => `<span class="bd" style="background:${c}">${t}</span>`).join(' ')
+    : '照預設班別上班';
+  showPop(`<b>${r.n}</b>　${dayTitle(d)}<br>${r.t ? `預設班別 ${r.t}<br>` : ''}${tags}`);
+}
+
+/* 欄頭：這個人是誰、這個月休哪幾天 */
+function popPerson(r) {
+  const days = Object.keys(r.c).map(Number).sort((a, b) => a - b);
+  const list = days.length
+    ? days.map(d => `${d}日`).join('、')
+    : '這個月沒有休假紀錄';
+  showPop(`<b>${r.n}</b>${r.t ? `　預設班別 ${r.t}` : ''}<br>
+    共 ${days.length} 天：${list}`);
+}
+
+/* 整天：那天有誰休假 */
+function popDay(d) {
+  const who = offOn(d);
+  const list = who.length
+    ? who.map(({ r, marks }) =>
+        `<div class="pl"><span class="pn">${r.n}</span>${marks.map(([t, c]) =>
+          `<span class="bd" style="background:${c}">${t}</span>`).join(' ')}</div>`).join('')
+    : '<div class="pl">這天沒有人休假</div>';
+  showPop(`<b>${dayTitle(d)}</b>　休假 ${who.length} 人<div class="plist">${list}</div>`);
+}
+
+document.addEventListener('click', e => {          // 點空白處關掉彈窗
+  const pop = document.getElementById('pop');
+  if (pop.classList.contains('show') && !pop.contains(e.target)
+      && !e.target.closest('[data-d]')) closePop();
+});
+
+init();
+</script>
+</body>
+</html>

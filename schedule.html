@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>個人班表設定</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  /* 深色固定配色：Telegram 內嵌瀏覽器在 Android/iOS 主題變數不一致，
+     與其跟著 themeParams 跑掉版型，不如比照公司系統做一套自己的深色。 */
+  :root{
+    --bg:#0b1014; --card:#111a20; --line:#1f6f3f; --line-soft:#20303a;
+    --fg:#e8f2ec; --dim:#7d9a8b; --accent:#22c55e; --accent-dk:#166534;
+    --warn:#f59e0b; --title:#f97316;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+       -webkit-tap-highlight-color:transparent;padding:12px 12px 96px}
+  h1{margin:.2em 0 .1em;font-size:1.5rem;text-align:center;color:var(--title);letter-spacing:.05em}
+  .month{text-align:center;font-size:1.15rem;font-weight:700}
+  .mnav{display:flex;align-items:center;justify-content:center;gap:14px}
+  .mnav .month{min-width:9.5em}
+  .marrow{border:0;background:transparent;color:var(--accent);font-size:1.2rem;
+          padding:6px 10px;cursor:pointer;font-family:inherit}
+  .marrow[disabled]{color:#33413a;cursor:default}
+  .mtabs{display:flex;justify-content:center;gap:6px;margin-top:6px;flex-wrap:wrap}
+  .mtab{border:1px solid var(--line-soft);background:transparent;color:var(--dim);
+        border-radius:999px;padding:4px 12px;font-size:.8rem;font-family:inherit;cursor:pointer}
+  .mtab.cur{border-color:var(--accent);color:var(--accent)}
+  .dot{color:var(--warn);font-size:1.3em;line-height:0;vertical-align:middle}
+  .other{margin-top:8px;font-size:.78rem;color:var(--warn);text-align:center}
+  .who{text-align:center;color:var(--warn);font-size:.85rem;margin-top:2px}
+  .cls{text-align:center;color:var(--dim);font-size:.85rem;margin-top:2px}
+  .quota{text-align:center;margin:10px 0;color:var(--accent);font-size:1rem}
+  .quota b{font-size:1.35rem;margin:0 4px}
+  .quota.zero{color:var(--warn)}
+  .grid-wrap{border:1px solid var(--line);border-radius:12px;padding:10px;background:var(--card)}
+  table{width:100%;border-collapse:separate;border-spacing:4px;table-layout:fixed}
+  th{color:var(--dim);font-weight:500;font-size:.8rem;padding-bottom:4px}
+  th.sun,th.sat{color:var(--accent)}
+  td{padding:0}
+  .day{width:100%;aspect-ratio:1/1;border:0;border-radius:8px;background:#1a242b;
+       color:#cfe0d6;font-size:1rem;font-family:inherit;cursor:pointer;
+       display:flex;align-items:center;justify-content:center;transition:transform .08s}
+  .day:active{transform:scale(.9)}
+  .day.blank{background:transparent;cursor:default}
+  .day.hol{background:#2a2016;color:var(--warn)}          /* 例假/國定假日 */
+  .day.on{background:var(--accent);color:#06210f;font-weight:700}   /* 已劃休假 */
+  .day.on.hol{background:var(--warn);color:#241a06}
+  .day.dirty{box-shadow:inset 0 0 0 2px #fff6}            /* 這次才改動的 */
+  .day.past{opacity:.35;cursor:not-allowed}
+  .note{margin-top:12px;text-align:center;font-size:.75rem;color:var(--dim);line-height:1.7}
+  .note .h{color:var(--warn)}
+  .diff{margin-top:10px;font-size:.82rem;line-height:1.8}
+  .diff .add{color:var(--accent)} .diff .rem{color:#f87171}
+  .clsbox{margin-top:12px}
+  select{width:100%;padding:10px;border-radius:8px;background:#1a242b;color:var(--fg);
+         border:1px solid var(--line-soft);font-family:inherit;font-size:.95rem}
+  .locked{color:var(--dim);font-size:.8rem;text-align:center;margin-top:6px}
+  .submit{position:fixed;left:12px;right:12px;bottom:12px;padding:16px;border:0;border-radius:12px;
+          background:var(--accent);color:#06210f;font-size:1.05rem;font-weight:700;
+          font-family:inherit;cursor:pointer;box-shadow:0 6px 20px #0008}
+  .submit[disabled]{background:#2b3a33;color:#6b7f74;box-shadow:none}
+  .err{padding:24px;text-align:center;color:var(--warn);line-height:1.9}
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+/* 資料走 URL fragment（#d=...）不是 query：fragment 不會送到伺服器，
+   班表內容就不會留在任何一層 access log 裡。 */
+function readPayload() {
+  const m = location.hash.match(/[#&]d=([^&]+)/);
+  if (!m) return null;
+  const b = atob(m[1].replace(/-/g, '+').replace(/_/g, '/'));
+  return JSON.parse(new TextDecoder().decode(Uint8Array.from(b, c => c.charCodeAt(0))));
+}
+
+/* P＝整包（多個月份），S＝目前顯示的那個月的區塊。
+   EDIT/CLS 依月份分開存，所以切月份不會弄丟前一個月改到一半的東西。 */
+let P = null, S = null, off = null, EDIT = {}, CLS = {};
+
+function init() {
+  try { P = readPayload(); } catch (e) { P = null; }
+  if (!P || !(P.months || []).length) {
+    document.getElementById('app').innerHTML =
+      '<div class="err">缺少班表資料。<br>請回 Telegram 用 /sedit_web 重新開啟。</div>';
+    return;
+  }
+  P.months.forEach(b => {
+    EDIT[b.month] = new Set(b.off_days || []);
+    CLS[b.month] = b.class_set ? b.class_id : null;
+  });
+  setMonth(P.cur || P.months[0].month);
+}
+
+function setMonth(m) {
+  S = P.months.find(b => b.month === m) || P.months[0];
+  off = EDIT[S.month];
+  render();
+}
+
+function monthIndex() { return P.months.findIndex(b => b.month === S.month); }
+
+function shiftMonth(step) {
+  const i = monthIndex() + step;
+  if (i < 0 || i >= P.months.length) return;
+  if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+  setMonth(P.months[i].month);
+}
+
+const base = () => new Set(S.off_days || []);
+
+/* 例假日 = 週六日（本地算，不佔網址長度）＋ bot 帶來的國定假日 */
+function holName(d) {
+  const n = (S.holidays || {})[d];
+  if (n) return n;
+  const w = new Date(+S.month.slice(0, 4), +S.month.slice(5, 7) - 1, d).getDay();
+  return (w === 0 || w === 6) ? '例假日' : '';
+}
+const isHol = d => !!holName(d);
+
+function toggle(d) {
+  if (S.locked_days && S.locked_days.includes(d)) return;
+  if (off.has(d)) off.delete(d);
+  else {
+    if (off.size >= S.has_leave) {
+      if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('error');
+      // Telegram WebView 會擋原生 alert()，有 showAlert 時優先用官方彈窗
+      const msg = `可劃額度只有 ${S.has_leave} 天，要再劃請先取消其他休假。`;
+      if (tg && tg.showAlert) tg.showAlert(msg); else alert(msg);
+      return;
+    }
+    off.add(d);
+  }
+  if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+  render();
+}
+
+/* 某個月的變更；不給月份就算目前這個月 */
+function diffLists(m) {
+  const blk = m ? P.months.find(x => x.month === m) : S;
+  const cur = EDIT[blk.month], b = new Set(blk.off_days || []);
+  return {
+    add: [...cur].filter(d => !b.has(d)).sort((x, y) => x - y),
+    rem: [...b].filter(d => !cur.has(d)).sort((x, y) => x - y),
+  };
+}
+
+/* 所有月份的變更彙總（送出用，也用來決定按鈕能不能按） */
+function allChanges() {
+  return P.months.map(blk => {
+    const { add, rem } = diffLists(blk.month);
+    const cls = (!blk.class_set && CLS[blk.month]) ? +CLS[blk.month] : null;
+    return { month: blk.month, add, remove: rem, class_id: cls };
+  }).filter(c => c.add.length || c.remove.length || c.class_id);
+}
+
+function render() {
+  const y = +S.month.slice(0, 4), mo = +S.month.slice(5, 7);
+  const first = new Date(y, mo - 1, 1).getDay();      // 0=日，與下方表頭一致
+  const days = S.days_in_month;
+  const b = base();
+
+  let cells = [];
+  for (let i = 0; i < first; i++) cells.push(null);
+  for (let d = 1; d <= days; d++) cells.push(d);
+  while (cells.length % 7) cells.push(null);
+
+  let rows = '';
+  for (let i = 0; i < cells.length; i += 7) {
+    rows += '<tr>' + cells.slice(i, i + 7).map(d => {
+      if (d === null) return '<td><div class="day blank"></div></td>';
+      const cl = ['day'];
+      if (isHol(d)) cl.push('hol');
+      if (off.has(d)) cl.push('on');
+      if (off.has(d) !== b.has(d)) cl.push('dirty');
+      if ((S.locked_days || []).includes(d)) cl.push('past');
+      const label = off.has(d) ? '✓' : d;
+      const tip = holName(d);
+      return `<td><div class="${cl.join(' ')}" data-d="${d}" title="${tip}">${label}</div></td>`;
+    }).join('') + '</tr>';
+  }
+
+  const remaining = S.has_leave - off.size;
+  const { add, rem } = diffLists();
+  const fmt = a => a.map(d => d + '日').join('、');
+
+  const clsBox = S.class_set
+    ? `<div class="locked">班別 ${S.class_name} 🔒 已鎖定，不可變更</div>`
+    : `<div class="clsbox"><select id="cls">
+         <option value="">— 選擇班別（送出後鎖定不可改）—</option>
+         ${(S.classes || []).map(([i, n]) =>
+            `<option value="${i}"${CLS[S.month] == i ? ' selected' : ''}>${n}</option>`).join('')}
+       </select></div>`;
+
+  // 月份切換：只能切「bot 已經抓過的月份」——這頁不能登入公司系統，切不到沒抓過的月
+  const i = monthIndex(), changed = allChanges();
+  const dot = m => changed.some(c => c.month === m) ? '<span class="dot">•</span>' : '';
+  const nav = P.months.length > 1 ? `
+    <div class="mnav">
+      <button class="marrow" id="mprev"${i === 0 ? ' disabled' : ''}>◀</button>
+      <div class="month">${S.month} 月份${dot(S.month)}</div>
+      <button class="marrow" id="mnext"${i === P.months.length - 1 ? ' disabled' : ''}>▶</button>
+    </div>
+    <div class="mtabs">${P.months.map(bk =>
+      `<button class="mtab${bk.month === S.month ? ' cur' : ''}" data-m="${bk.month}">${bk.month.slice(5)}月${dot(bk.month)}</button>`
+     ).join('')}</div>`
+    : `<div class="month">${S.month} 月份</div>`;
+
+  document.getElementById('app').innerHTML = `
+    <h1>個人班表設定</h1>
+    ${nav}
+    ${P.user ? `<div class="who">${P.user}</div>` : ''}
+    <div class="cls">${S.class_name || '（班別未設定）'}</div>
+    <div class="quota ${remaining <= 0 ? 'zero' : ''}">🌴 剩餘可用天數 <b>${remaining}</b> 天</div>
+    <div class="grid-wrap">
+      <table>
+        <thead><tr>${['日','一','二','三','四','五','六']
+          .map((w, i) => `<th class="${i === 0 ? 'sun' : i === 6 ? 'sat' : ''}">${w}</th>`).join('')}</tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      ${clsBox}
+      <div class="diff">
+        ${add.length ? `<div class="add">➕ 將新增休假：${fmt(add)}</div>` : ''}
+        ${rem.length ? `<div class="rem">➖ 將取消休假：${fmt(rem)}</div>` : ''}
+      </div>
+      ${changed.length > 1 ? `<div class="other">其他月份也有變更：${
+        changed.filter(c => c.month !== S.month).map(c => c.month).join('、')}（會一起送出）</div>` : ''}
+      <div class="note">
+        <span class="h">⚠️ 送出提醒</span><br>
+        送出後由機器人登入公司系統逐日寫入，<br>
+        實際結果以系統回覆的訊息為準。
+      </div>
+    </div>
+    <button class="submit" id="go"${changed.length ? '' : ' disabled'}>
+      ✨ ${P.dry ? '送出（測試模式，不寫入）' : '確認送出班表'}${
+        changed.length > 1 ? `（${changed.length} 個月）` : ''}
+    </button>`;
+
+  document.querySelectorAll('.day[data-d]').forEach(el =>
+    el.addEventListener('click', () => toggle(+el.dataset.d)));
+  const prev = document.getElementById('mprev'), next = document.getElementById('mnext');
+  if (prev) prev.addEventListener('click', () => shiftMonth(-1));
+  if (next) next.addEventListener('click', () => shiftMonth(1));
+  document.querySelectorAll('.mtab').forEach(el =>
+    el.addEventListener('click', () => setMonth(el.dataset.m)));
+  const sel = document.getElementById('cls');
+  if (sel) sel.addEventListener('change', () => { CLS[S.month] = sel.value || null; render(); });
+  document.getElementById('go').addEventListener('click', submit);
+}
+
+function submit() {
+  const payload = { v: 2, nonce: P.nonce || '', changes: allChanges() };
+  if (!tg) { alert('（瀏覽器預覽模式）將送出：\n' + JSON.stringify(payload, null, 2)); return; }
+  tg.sendData(JSON.stringify(payload));   // 送出後 Telegram 會自動關閉本頁
+}
+
+init();
+</script>
+</body>
+</html>
