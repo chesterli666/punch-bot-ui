@@ -197,6 +197,14 @@ function render() {
   // 日期條捲到選中的那天（不然選 28 號要自己滑很久）
   const on = document.querySelector('.sd.on');
   if (on) on.scrollIntoView({ block: 'nearest', inline: 'center' });
+  // 電腦版滑鼠滾輪只捲垂直，日期條會捲不動（部門 chip 踩過同一個問題）。
+  // 31 天換行排太佔版面，這裡保留橫向捲動，改成把滾輪轉成橫向捲。
+  const strip = document.getElementById('strip');
+  strip.addEventListener('wheel', e => {
+    if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;   // 本來就是橫向手勢就別插手
+    strip.scrollLeft += e.deltaY;
+    e.preventDefault();
+  }, { passive: false });
 }
 
 init();

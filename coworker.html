@@ -21,7 +21,9 @@
   .tools{display:flex;gap:8px;padding:0 10px 8px}
   input[type=search]{flex:1;min-width:0;padding:9px 12px;border-radius:8px;background:#16222a;
     color:var(--fg);border:1px solid var(--line-soft);font-family:inherit;font-size:.9rem}
-  .chips{display:flex;gap:6px;overflow-x:auto;padding:0 10px 8px;-webkit-overflow-scrolling:touch}
+  /* 部門 chip 一律換行排（同 leave.html 的假別 chip）。原本用 overflow-x 橫向捲動，
+     電腦版沒有捲動條、滑鼠滾輪也只捲垂直，右邊的部門根本點不到（使用者實機回報）。 */
+  .chips{display:flex;flex-wrap:wrap;gap:6px;padding:0 10px 8px}
   .chip{border:1px solid var(--line-soft);background:#16222a;color:var(--dim);border-radius:999px;
         padding:6px 11px;font-size:.78rem;font-family:inherit;cursor:pointer;white-space:nowrap}
   .chip.on{border-color:var(--accent);color:var(--accent);background:#132a1e}
