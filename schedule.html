@@ -16,7 +16,7 @@
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--fg);
        font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
-       -webkit-tap-highlight-color:transparent;padding:12px 12px 96px}
+       -webkit-tap-highlight-color:transparent;padding:12px 12px 12px}
   h1{margin:.2em 0 .1em;font-size:1.5rem;text-align:center;color:var(--title);letter-spacing:.05em}
   .month{text-align:center;font-size:1.15rem;font-weight:700}
   .mnav{display:flex;align-items:center;justify-content:center;gap:14px}
@@ -58,10 +58,15 @@
   select{width:100%;padding:10px;border-radius:8px;background:#1a242b;color:var(--fg);
          border:1px solid var(--line-soft);font-family:inherit;font-size:.95rem}
   .locked{color:var(--dim);font-size:.8rem;text-align:center;margin-top:6px}
-  .submit{position:fixed;left:12px;right:12px;bottom:12px;padding:16px;border:0;border-radius:12px;
-          background:var(--accent);color:#06210f;font-size:1.05rem;font-weight:700;
+  /* 兩顆按鈕排在內容最後（不用 fixed：會蓋住月曆，實機踩過） */
+  .bar{display:flex;gap:8px;margin-top:14px}
+  .submit{flex:1;padding:16px 8px;border:0;border-radius:12px;
+          background:var(--accent);color:#06210f;font-size:1rem;font-weight:700;
           font-family:inherit;cursor:pointer;box-shadow:0 6px 20px #0008}
-  .submit[disabled]{background:#2b3a33;color:#6b7f74;box-shadow:none}
+  .submit.ghost{flex:0 0 34%;background:#16222a;color:var(--fg);
+                border:1px solid var(--line-soft);box-shadow:none}
+  .submit[disabled]{background:#2b3a33;color:#6b7f74;box-shadow:none;border-color:transparent}
+  .drynote{text-align:center;font-size:.72rem;color:var(--warn);margin-top:8px}
   .err{padding:24px;text-align:center;color:var(--warn);line-height:1.9}
 </style>
 </head>
@@ -238,10 +243,12 @@ function render() {
         實際結果以系統回覆的訊息為準。
       </div>
     </div>
-    <button class="submit" id="go"${changed.length ? '' : ' disabled'}>
-      ✨ ${P.dry ? '送出（測試模式，不寫入）' : '確認送出班表'}${
-        changed.length > 1 ? `（${changed.length} 個月）` : ''}
-    </button>`;
+    <div class="bar">
+      <button class="submit ghost" id="prev"${changed.length ? '' : ' disabled'}>👀 預覽</button>
+      <button class="submit" id="go"${changed.length ? '' : ' disabled'}>
+        ✅ 確認送出${changed.length > 1 ? `（${changed.length} 個月）` : ''}</button>
+    </div>
+    ${P.dry ? '<div class="drynote">⚠️ 目前是測試模式（config.ini dry=1），兩顆都不會真的寫入</div>' : ''}`;
 
   document.querySelectorAll('.day[data-d]').forEach(el =>
     el.addEventListener('click', () => toggle(+el.dataset.d)));
@@ -252,11 +259,12 @@ function render() {
     el.addEventListener('click', () => setMonth(el.dataset.m)));
   const sel = document.getElementById('cls');
   if (sel) sel.addEventListener('change', () => { CLS[S.month] = sel.value || null; render(); });
-  document.getElementById('go').addEventListener('click', submit);
+  document.getElementById('prev').addEventListener('click', () => submit('dry'));
+  document.getElementById('go').addEventListener('click', () => submit('send'));
 }
 
-function submit() {
-  const payload = { v: 2, nonce: P.nonce || '', changes: allChanges() };
+function submit(mode) {
+  const payload = { v: 2, nonce: P.nonce || '', mode, changes: allChanges() };
   if (!tg) { alert('（瀏覽器預覽模式）將送出：\n' + JSON.stringify(payload, null, 2)); return; }
   tg.sendData(JSON.stringify(payload));   // 送出後 Telegram 會自動關閉本頁
 }
