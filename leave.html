@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>休假申請</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root{
+    --bg:#0b1014; --card:#111a20; --line:#1f6f3f; --line-soft:#22303a;
+    --fg:#e8f2ec; --dim:#7d9a8b; --accent:#22c55e; --warn:#f59e0b; --title:#f97316;
+    --bad:#f87171;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+       -webkit-tap-highlight-color:transparent;padding:12px 12px 100px}
+  h1{margin:.2em 0 .1em;font-size:1.4rem;text-align:center;color:var(--title)}
+  .sub{text-align:center;color:var(--dim);font-size:.76rem;margin-bottom:12px}
+  .sec{background:var(--card);border:1px solid var(--line-soft);border-radius:12px;
+       padding:12px;margin-bottom:10px}
+  .lb{font-size:.8rem;color:var(--dim);margin-bottom:8px}
+  .lb b{color:var(--accent)}
+
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{border:1px solid var(--line-soft);background:#16222a;color:var(--fg);border-radius:999px;
+        padding:7px 12px;font-size:.82rem;font-family:inherit;cursor:pointer}
+  .chip.on{background:var(--accent);color:#06210f;border-color:var(--accent);font-weight:700}
+
+  select,textarea{width:100%;padding:10px;border-radius:8px;background:#16222a;color:var(--fg);
+    border:1px solid var(--line-soft);font-family:inherit;font-size:.9rem}
+  textarea{resize:vertical;min-height:64px}
+
+  .mnav{display:flex;align-items:center;justify-content:center;gap:14px;margin-bottom:6px}
+  .mnav .mt{font-weight:700;min-width:8em;text-align:center}
+  .marrow{border:0;background:transparent;color:var(--accent);font-size:1.1rem;
+          padding:4px 10px;cursor:pointer;font-family:inherit}
+  .marrow[disabled]{color:#33413a;cursor:default}
+  table{width:100%;border-collapse:separate;border-spacing:3px;table-layout:fixed}
+  th{color:var(--dim);font-weight:500;font-size:.74rem;padding-bottom:2px}
+  th.we{color:var(--accent)}
+  .day{width:100%;aspect-ratio:1/1;border:0;border-radius:8px;background:#1a242b;color:#cfe0d6;
+       font-size:.9rem;font-family:inherit;cursor:pointer;display:flex;flex-direction:column;
+       align-items:center;justify-content:center;line-height:1.1}
+  .day.blank{background:transparent;cursor:default}
+  .day.hol{background:#2a2016;color:var(--warn)}
+  .day.off{background:#1b2b34;color:#4d7a8c}          /* 本來就排休 */
+  .day.past{opacity:.28;cursor:not-allowed}
+  .day.on{background:var(--accent);color:#06210f;font-weight:700}
+  .day small{font-size:.5rem;opacity:.85}
+
+  .picked{margin-top:8px;font-size:.8rem;line-height:1.7}
+  .picked .t{color:var(--accent)}
+  .warn{color:var(--warn);font-size:.78rem;margin-top:6px;line-height:1.6}
+  .submit{position:fixed;left:12px;right:12px;bottom:12px;padding:15px;border:0;border-radius:12px;
+          background:var(--accent);color:#06210f;font-size:1.02rem;font-weight:700;
+          font-family:inherit;cursor:pointer;box-shadow:0 6px 20px #0008}
+  .submit[disabled]{background:#2b3a33;color:#6b7f74;box-shadow:none}
+  .err{padding:28px;text-align:center;color:var(--warn);line-height:2}
+</style>
+</head>
+<body>
+<div id="app"><div class="sub">載入中…</div></div>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+function b64bytes(s) {
+  const b = atob(s.replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(b, c => c.charCodeAt(0));
+}
+async function readPayload() {
+  const z = location.hash.match(/[#&]z=([^&]+)/);
+  if (z) {
+    if (!window.DecompressionStream) throw new Error('NO_DS');
+    const ds = new DecompressionStream('deflate');
+    const buf = await new Response(new Blob([b64bytes(z[1])]).stream().pipeThrough(ds)).arrayBuffer();
+    return JSON.parse(new TextDecoder().decode(buf));
+  }
+  const d = location.hash.match(/[#&]d=([^&]+)/);
+  return d ? JSON.parse(new TextDecoder().decode(b64bytes(d[1]))) : null;
+}
+
+const WD = ['日', '一', '二', '三', '四', '五', '六'];
+let P = null, type = '', agent = '', reason = '', mi = 0;
+const picked = new Set();          // "YYYY-MM-DD"，可跨月
+
+async function init() {
+  let err = null;
+  try { P = await readPayload(); } catch (e) { err = e.message; }
+  if (!P) {
+    document.getElementById('app').innerHTML = err === 'NO_DS'
+      ? '<div class="err">Telegram 內建瀏覽器太舊，無法解壓縮資料。<br>請更新後再試，或用 /apply 的逐步版。</div>'
+      : '<div class="err">缺少資料。<br>請回 Telegram 用 /apply_web 重新開啟。</div>';
+    return;
+  }
+  render();
+}
+
+const cur = () => P.months[mi];
+
+function toggle(ds) { picked.has(ds) ? picked.delete(ds) : picked.add(ds); render(); }
+
+/* 已排休的日子仍可選（可能要改申請別的假別），但會在下面提醒 */
+function conflicts() {
+  return [...picked].filter(ds => {
+    const b = P.months.find(m => m.m === ds.slice(0, 7));
+    return b && b.off.includes(+ds.slice(8));
+  }).sort();
+}
+
+function render() {
+  const b = cur(), y = +b.m.slice(0, 4), mo = +b.m.slice(5, 7);
+  const first = new Date(y, mo - 1, 1).getDay();
+  const cells = [];
+  for (let i = 0; i < first; i++) cells.push(null);
+  for (let d = 1; d <= b.days; d++) cells.push(d);
+  while (cells.length % 7) cells.push(null);
+
+  let rows = '';
+  for (let i = 0; i < cells.length; i += 7) {
+    rows += '<tr>' + cells.slice(i, i + 7).map(d => {
+      if (d === null) return '<td><div class="day blank"></div></td>';
+      const ds = `${b.m}-${String(d).padStart(2, '0')}`;
+      const w = new Date(y, mo - 1, d).getDay();
+      const c = ['day'];
+      const holName = b.hol[d];
+      if (holName || w === 0 || w === 6) c.push('hol');
+      if (b.off.includes(d)) c.push('off');
+      if (d < b.min) c.push('past');
+      if (picked.has(ds)) c.push('on');
+      const tag = b.off.includes(d) ? '<small>已休</small>'
+        : holName ? `<small>${holName.slice(0, 3)}</small>` : '';
+      return `<td><div class="${c.join(' ')}" data-ds="${d < b.min ? '' : ds}">${d}${tag}</div></td>`;
+    }).join('') + '</tr>';
+  }
+
+  const sorted = [...picked].sort();
+  const conf = conflicts();
+  const ready = type && sorted.length;
+
+  document.getElementById('app').innerHTML = `
+    <h1>休假申請</h1>
+    <div class="sub">${P.user || ''}　·　清單更新於 ${P.fetched}</div>
+
+    <div class="sec">
+      <div class="lb">假別 ${type ? `<b>${type}</b>` : '（必選）'}</div>
+      <div class="chips">${P.types.map(t =>
+        `<button class="chip${t === type ? ' on' : ''}" data-t="${t}">${t}</button>`).join('')}</div>
+    </div>
+
+    <div class="sec">
+      <div class="lb">代理人員</div>
+      <select id="ag">
+        <option value="">（不指定代理人）</option>
+        ${P.agents.map(a => `<option value="${a}"${a === agent ? ' selected' : ''}>${a}</option>`).join('')}
+      </select>
+    </div>
+
+    <div class="sec">
+      <div class="lb">日期（可跨月多選）${sorted.length ? `<b>已選 ${sorted.length} 天</b>` : ''}</div>
+      <div class="mnav">
+        <button class="marrow" id="mp"${mi === 0 ? ' disabled' : ''}>◀</button>
+        <span class="mt">${b.m}</span>
+        <button class="marrow" id="mn"${mi === P.months.length - 1 ? ' disabled' : ''}>▶</button>
+      </div>
+      <table>
+        <thead><tr>${WD.map((w, i) =>
+          `<th class="${i === 0 || i === 6 ? 'we' : ''}">${w}</th>`).join('')}</tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="picked">${sorted.length
+        ? `<span class="t">已選：</span>${sorted.map(x => x.slice(5)).join('、')}`
+        : '<span style="color:var(--dim)">尚未選日期</span>'}</div>
+      ${conf.length ? `<div class="warn">⚠️ ${conf.map(x => x.slice(5)).join('、')}
+        本來就是排休日，確定要申請嗎？</div>` : ''}
+    </div>
+
+    <div class="sec">
+      <div class="lb">事由</div>
+      <textarea id="rs" placeholder="選填">${reason}</textarea>
+    </div>
+
+    <button class="submit" id="go"${ready ? '' : ' disabled'}>
+      ✨ ${P.dry ? '送出（測試模式，只填表不送）' : '送出申請單'}${sorted.length ? `（${sorted.length} 天）` : ''}
+    </button>`;
+
+  document.querySelectorAll('.chip').forEach(el =>
+    el.addEventListener('click', () => { type = el.dataset.t; render(); }));
+  document.querySelectorAll('.day[data-ds]').forEach(el => {
+    if (el.dataset.ds) el.addEventListener('click', () => toggle(el.dataset.ds));
+  });
+  document.getElementById('mp').addEventListener('click', () => { if (mi > 0) { mi--; render(); } });
+  document.getElementById('mn').addEventListener('click', () => {
+    if (mi < P.months.length - 1) { mi++; render(); } });
+  document.getElementById('ag').addEventListener('change', e => { agent = e.target.value; });
+  const rs = document.getElementById('rs');
+  rs.addEventListener('input', e => { reason = e.target.value; });   // 不重繪，免得游標跳掉
+  document.getElementById('go').addEventListener('click', submit);
+}
+
+function submit() {
+  const payload = {
+    kind: 'leave', nonce: P.nonce || '',
+    type, agent, reason,
+    dates: [...picked].sort(),
+  };
+  if (!tg || !tg.sendData) { alert(JSON.stringify(payload, null, 2)); return; }
+  tg.sendData(JSON.stringify(payload));
+}
+
+init();
+</script>
+</body>
+</html>
