@@ -77,21 +77,34 @@
 const tg = window.Telegram && window.Telegram.WebApp;
 if (tg) { tg.ready(); tg.expand(); }
 
-/* 資料走 URL fragment（#d=...）不是 query：fragment 不會送到伺服器，
-   班表內容就不會留在任何一層 access log 裡。 */
-function readPayload() {
-  const m = location.hash.match(/[#&]d=([^&]+)/);
-  if (!m) return null;
-  const b = atob(m[1].replace(/-/g, '+').replace(/_/g, '/'));
-  return JSON.parse(new TextDecoder().decode(Uint8Array.from(b, c => c.charCodeAt(0))));
+/* 資料走 URL fragment（#z=壓縮／#d=未壓縮）不是 query：fragment 不會送到伺服器，
+   班表內容就不會留在任何一層 access log 裡。
+
+   `#z=` 是 zlib 壓縮版（同 coworker/punchtime 那幾頁的作法）。月份一多，未壓縮的
+   base64 會撞上 Telegram reply_markup 的網址長度上限（踩過：三個月 1459 字元）。
+   `#d=` 保留著相容舊網址——Telegram 沿用還開著的 Mini App 視窗時，網址可能是舊的。 */
+function b64bytes(s) {
+  const b = atob(s.replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(b, c => c.charCodeAt(0));
+}
+async function readPayload() {
+  const z = location.hash.match(/[#&]z=([^&]+)/);
+  if (z) {
+    if (!window.DecompressionStream) throw new Error('NO_DS');
+    const ds = new DecompressionStream('deflate');
+    const buf = await new Response(new Blob([b64bytes(z[1])]).stream().pipeThrough(ds)).arrayBuffer();
+    return JSON.parse(new TextDecoder().decode(buf));
+  }
+  const d = location.hash.match(/[#&]d=([^&]+)/);
+  return d ? JSON.parse(new TextDecoder().decode(b64bytes(d[1]))) : null;
 }
 
 /* P＝整包（多個月份），S＝目前顯示的那個月的區塊。
    EDIT/CLS 依月份分開存，所以切月份不會弄丟前一個月改到一半的東西。 */
 let P = null, S = null, off = null, EDIT = {}, CLS = {};
 
-function init() {
-  try { P = readPayload(); } catch (e) { P = null; }
+async function init() {
+  try { P = await readPayload(); } catch (e) { P = null; }
   if (!P || !(P.months || []).length) {
     document.getElementById('app').innerHTML =
       '<div class="err">缺少班表資料。<br>請回 Telegram 用 /sedit_web 重新開啟。</div>';
