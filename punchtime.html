@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>打卡記錄</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root{
+    --bg:#0b1014; --card:#111a20; --line-soft:#22303a;
+    --fg:#e8f2ec; --dim:#7d9a8b; --accent:#22c55e; --warn:#f59e0b; --title:#f97316;
+    --off:#38bdf8; --bad:#f87171; --head:#16232b; --we:#1a1420;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+       -webkit-tap-highlight-color:transparent;padding:10px 0}
+  h1{margin:.1em 10px .1em;font-size:1.2rem;text-align:center;color:var(--title)}
+  .sub{text-align:center;color:var(--dim);font-size:.76rem;margin-bottom:8px}
+
+  /* 換日期不用回 Telegram：整月資料都在頁面裡，箭頭與日期條都是純前端切換 */
+  .dnav{display:flex;align-items:center;justify-content:center;gap:10px;padding:0 10px 6px}
+  .dnav .dt{font-weight:700;min-width:9em;text-align:center;font-size:.98rem}
+  .arrow{border:0;background:transparent;color:var(--accent);font-size:1.15rem;
+         padding:4px 10px;cursor:pointer;font-family:inherit}
+  .arrow[disabled]{color:#33413a;cursor:default}
+  .btn{border:1px solid var(--line-soft);background:#16222a;color:var(--dim);border-radius:8px;
+       padding:6px 11px;font-family:inherit;font-size:.78rem;cursor:pointer;white-space:nowrap}
+  .btn.on{border-color:var(--accent);color:var(--accent)}
+  .strip{display:flex;gap:4px;overflow-x:auto;padding:0 10px 8px;-webkit-overflow-scrolling:touch}
+  .sd{flex:0 0 auto;width:36px;border:1px solid var(--line-soft);background:#16222a;
+      color:var(--dim);border-radius:8px;padding:5px 0;font-family:inherit;font-size:.72rem;
+      cursor:pointer;text-align:center;line-height:1.3}
+  .sd small{display:block;font-size:.58rem;opacity:.8}
+  .sd.we{background:var(--we)}
+  .sd.on{border-color:var(--accent);color:#06210f;background:var(--accent);font-weight:700}
+  .sd.td{outline:1px solid #fff;outline-offset:-3px}
+
+  .stat{display:flex;gap:6px;padding:0 10px 8px;font-size:.74rem;color:var(--dim);
+        justify-content:center;flex-wrap:wrap}
+  .stat b{color:var(--fg);font-weight:700}
+
+  .wrap{overflow:auto;border-top:1px solid var(--line-soft);border-bottom:1px solid var(--line-soft);
+        max-height:70vh;-webkit-overflow-scrolling:touch}
+  table{width:100%;border-collapse:separate;border-spacing:0;font-size:.78rem}
+  th,td{border-bottom:1px solid #1b2831;padding:7px 6px;text-align:center}
+  thead th{position:sticky;top:0;z-index:2;background:var(--head);color:var(--dim);font-weight:500}
+  th.nm{text-align:left;color:var(--fg);font-weight:500;padding-left:10px;white-space:nowrap}
+  th.nm small{display:block;color:var(--dim);font-size:.62rem;font-weight:400}
+  tr.off{background:#10222b}
+  tr.odd td.st{color:var(--warn)}
+  tr.live td.st{color:var(--accent)}
+  .t{white-space:nowrap}
+  .t.bad{color:var(--bad);font-weight:700}
+  td.st{white-space:nowrap;font-size:.74rem}
+  .lv{color:var(--off)}
+  .dimtxt{color:var(--dim)}
+
+  .legend{padding:10px;color:var(--dim);font-size:.72rem;line-height:1.9;text-align:center}
+  .legend b{color:var(--bad);font-weight:700}
+  .err{padding:28px;text-align:center;color:var(--warn);line-height:2}
+</style>
+</head>
+<body>
+<div id="app"><div class="sub">載入中…</div></div>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+function b64bytes(s) {
+  const b = atob(s.replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(b, c => c.charCodeAt(0));
+}
+async function readPayload() {
+  const z = location.hash.match(/[#&]z=([^&]+)/);
+  if (z) {
+    if (!window.DecompressionStream) throw new Error('NO_DS');
+    const ds = new DecompressionStream('deflate');
+    const buf = await new Response(new Blob([b64bytes(z[1])]).stream().pipeThrough(ds)).arrayBuffer();
+    return JSON.parse(new TextDecoder().decode(buf));
+  }
+  const d = location.hash.match(/[#&]d=([^&]+)/);
+  return d ? JSON.parse(new TextDecoder().decode(b64bytes(d[1]))) : null;
+}
+
+const WD = ['日', '一', '二', '三', '四', '五', '六'];
+const ST = { o: '🌴', w: '✅', x: '⚠️ 未完整', n: '❔ 尚未打卡', '-': '❔ 無紀錄', p: '🕒 上班中' };
+let P = null, day = 1, Y = 0, M = 0, TODAY = 0;
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"]/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+async function init() {
+  let err = null;
+  try { P = await readPayload(); } catch (e) { err = e.message; }
+  if (!P) {
+    document.getElementById('app').innerHTML = err === 'NO_DS'
+      ? '<div class="err">Telegram 內建瀏覽器太舊，無法解壓縮資料。<br>請更新後再試，或用 /dept_punchtime 的圖片版。</div>'
+      : '<div class="err">缺少資料。<br>請回 Telegram 用 /dept_punchtime_web 重新開啟。</div>';
+    return;
+  }
+  Y = +P.m.slice(0, 4); M = +P.m.slice(5, 7);
+  const now = new Date();
+  TODAY = (now.getFullYear() === Y && now.getMonth() + 1 === M) ? now.getDate() : 0;
+  day = P.cur || 1;
+  render();
+}
+
+const wd = d => new Date(Y, M - 1, d).getDay();
+const weekend = d => wd(d) === 0 || wd(d) === 6;
+/* 狀態碼是 Python 那邊照公司系統的 complete 旗標算的（與圖片版同一套判定）。
+   唯一的顯示層例外：**今天**打了上班卡、還沒打下班卡，公司系統當然標記未完整，
+   但那不是異常而是還在上班——只改標籤叫「🕒 上班中」，不動任何判定。 */
+function cell(r, d) {
+  const c = r.c[d] || [[], [], '-', ''];
+  if (d === TODAY && c[2] === 'x' && c[1].every(([t]) => t === '—')) {
+    return [c[0], c[1], 'p', c[3]];
+  }
+  return c;
+}
+
+function times(list) {
+  if (!list.length) return '<span class="dimtxt">—</span>';
+  return list.map(([t, bad]) =>
+    `<span class="t${bad ? ' bad' : ''}">${esc(t)}</span>`).join('、');
+}
+
+function render() {
+  const rows = P.rows.map(r => {
+    const [ins, outs, st, lv] = cell(r, day);
+    const cls = st === 'o' ? ' class="off"' : (st === 'x' ? ' class="odd"' : (st === 'p' ? ' class="live"' : ''));
+    const status = st === 'o' ? `<span class="lv">🌴 ${esc(lv || '休假')}</span>` : ST[st];
+    return `<tr${cls}>
+      <th class="nm">${esc(r.n)}<small>${esc(r.t)}</small></th>
+      <td>${st === 'o' ? '<span class="dimtxt">—</span>' : times(ins)}</td>
+      <td>${st === 'o' ? '<span class="dimtxt">—</span>' : times(outs)}</td>
+      <td class="st">${status}</td>
+    </tr>`;
+  }).join('');
+
+  const kinds = P.rows.map(r => cell(r, day)[2]);
+  const n = k => kinds.filter(x => x === k).length;
+  const late = P.rows.filter(r => cell(r, day)[0].some(([, bad]) => bad)).length;
+  const early = P.rows.filter(r => cell(r, day)[1].some(([, bad]) => bad)).length;
+
+  document.getElementById('app').innerHTML = `
+    <h1>${esc(P.g)} 打卡記錄</h1>
+    <div class="sub">${esc(P.m)}　·　${P.rows.length} 人　·　快取更新於 ${esc(P.f)}</div>
+
+    <div class="dnav">
+      <button class="arrow" id="dp"${day <= 1 ? ' disabled' : ''}>◀</button>
+      <span class="dt">${esc(P.m)}-${String(day).padStart(2, '0')}（週${WD[wd(day)]}）</span>
+      <button class="arrow" id="dn"${day >= P.days ? ' disabled' : ''}>▶</button>
+      ${TODAY ? `<button class="btn${day === TODAY ? ' on' : ''}" id="tdy">今天</button>` : ''}
+    </div>
+    <div class="strip" id="strip">
+      ${Array.from({ length: P.days }, (_, i) => i + 1).map(d => {
+        const c = ['sd'];
+        if (weekend(d)) c.push('we');
+        if (d === day) c.push('on');
+        if (d === TODAY) c.push('td');
+        return `<button class="${c.join(' ')}" data-d="${d}">${d}<small>${WD[wd(d)]}</small></button>`;
+      }).join('')}
+    </div>
+
+    <div class="stat">
+      <span>出勤 <b>${n('w') + n('x') + n('p')}</b></span>
+      <span>休假 <b>${n('o')}</b></span>
+      <span>尚未打卡 <b>${n('n') + n('-')}</b></span>
+      ${n('p') ? `<span>上班中 <b>${n('p')}</b></span>` : ''}
+      ${n('x') ? `<span style="color:var(--warn)">未完整 <b style="color:var(--warn)">${n('x')}</b></span>` : ''}
+      ${late ? `<span style="color:var(--bad)">遲到 <b style="color:var(--bad)">${late}</b></span>` : ''}
+      ${early ? `<span style="color:var(--bad)">早退 <b style="color:var(--bad)">${early}</b></span>` : ''}
+    </div>
+
+    <div class="wrap">
+      <table>
+        <thead><tr><th class="nm">姓名 / 班別</th><th>上班</th><th>下班</th><th>狀態</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div class="legend">
+      <b>紅字</b>＝比排定班別時間晚到／早走　·　⚠️ 未完整＝系統標記打卡異常<br>
+      🕒 上班中＝今天打了上班卡、還沒打下班卡<br>
+      🌴＝休假　·　—＝尚未打下班卡　·　左右箭頭或下方日期條可換日
+    </div>`;
+
+  document.getElementById('dp').addEventListener('click', () => { if (day > 1) { day--; render(); } });
+  document.getElementById('dn').addEventListener('click', () => { if (day < P.days) { day++; render(); } });
+  const t = document.getElementById('tdy');
+  if (t) t.addEventListener('click', () => { day = TODAY; render(); });
+  document.querySelectorAll('.sd').forEach(el =>
+    el.addEventListener('click', () => { day = +el.dataset.d; render(); }));
+  // 日期條捲到選中的那天（不然選 28 號要自己滑很久）
+  const on = document.querySelector('.sd.on');
+  if (on) on.scrollIntoView({ block: 'nearest', inline: 'center' });
+}
+
+init();
+</script>
+</body>
+</html>

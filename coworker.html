@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>同事班表</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root{
+    --bg:#0b1014; --card:#111a20; --line-soft:#22303a;
+    --fg:#e8f2ec; --dim:#7d9a8b; --accent:#22c55e; --warn:#f59e0b; --title:#f97316;
+    --off:#38bdf8; --half:#0e7490; --odd:#f59e0b; --we:#1a1420; --me:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+       -webkit-tap-highlight-color:transparent;padding:10px 0}
+  h1{margin:.1em 10px .1em;font-size:1.2rem;text-align:center;color:var(--title)}
+  .sub{text-align:center;color:var(--dim);font-size:.76rem;margin-bottom:8px}
+
+  .tools{display:flex;gap:8px;padding:0 10px 8px}
+  input[type=search]{flex:1;min-width:0;padding:9px 12px;border-radius:8px;background:#16222a;
+    color:var(--fg);border:1px solid var(--line-soft);font-family:inherit;font-size:.9rem}
+  .chips{display:flex;gap:6px;overflow-x:auto;padding:0 10px 8px;-webkit-overflow-scrolling:touch}
+  .chip{border:1px solid var(--line-soft);background:#16222a;color:var(--dim);border-radius:999px;
+        padding:6px 11px;font-size:.78rem;font-family:inherit;cursor:pointer;white-space:nowrap}
+  .chip.on{border-color:var(--accent);color:var(--accent);background:#132a1e}
+
+  .list{padding:0 10px}
+  .row{background:var(--card);border:1px solid var(--line-soft);border-radius:10px;
+       padding:8px 10px;margin-bottom:6px;cursor:pointer}
+  .row.open{border-color:var(--accent)}
+  .top{display:flex;align-items:baseline;gap:6px}
+  .nm{font-size:.92rem;font-weight:700}
+  .nm.me{color:var(--me)}
+  .gp{font-size:.72rem;color:var(--dim)}
+  .ct{font-size:.72rem;color:var(--dim);margin-left:auto;white-space:nowrap}
+  .n{font-size:.7rem;color:var(--accent);margin-left:6px}
+
+  /* 迷你狀態條：一天一格，一眼看出這個人整月的休假密度 */
+  .bar{display:flex;gap:1px;margin-top:6px}
+  .bar i{flex:1;height:9px;border-radius:2px;background:#1a242b}
+  .bar i.we{background:var(--we)}
+  .bar i.o{background:var(--off)} .bar i.h{background:var(--half)}
+  .bar i.w{background:var(--accent)} .bar i.x{background:var(--odd)}
+  .bar i.td{outline:1px solid #fff;outline-offset:1px}
+
+  /* 展開：整月月曆 */
+  .cal{margin-top:8px;border-top:1px solid var(--line-soft);padding-top:8px}
+  table{width:100%;table-layout:fixed;border-collapse:separate;border-spacing:2px}
+  th{color:var(--dim);font-weight:500;font-size:.68rem}
+  th.wh{color:var(--accent)}
+  .d{aspect-ratio:1/1;border-radius:6px;background:#1a242b;display:flex;flex-direction:column;
+     align-items:center;justify-content:center;line-height:1.15;font-size:.74rem;color:#cfe0d6}
+  .d.blank{background:transparent}
+  .d.we{background:var(--we)}
+  .d.o{background:var(--off);color:#04202b;font-weight:700}
+  .d.h{background:var(--half);color:#e8f7ff;font-weight:700}
+  .d.w{background:#173a26;color:#8ee0aa}
+  .d.x{background:#3a2a12;color:var(--odd)}
+  .d.td{box-shadow:inset 0 0 0 2px #fff}
+  .d small{font-size:.5rem;opacity:.9;max-width:100%;overflow:hidden;white-space:nowrap}
+  .sum{font-size:.74rem;color:var(--dim);margin-top:6px;line-height:1.6}
+
+  .legend{padding:10px;color:var(--dim);font-size:.72rem;line-height:1.9;text-align:center}
+  .legend b{color:var(--fg);font-weight:500}
+  .k{display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:-1px;margin-right:3px}
+  .empty{padding:24px;text-align:center;color:var(--dim)}
+  .err{padding:28px;text-align:center;color:var(--warn);line-height:2}
+</style>
+</head>
+<body>
+<div id="app"><div class="sub">載入中…</div></div>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+function b64bytes(s) {
+  const b = atob(s.replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(b, c => c.charCodeAt(0));
+}
+async function readPayload() {
+  const z = location.hash.match(/[#&]z=([^&]+)/);
+  if (z) {
+    if (!window.DecompressionStream) throw new Error('NO_DS');
+    const ds = new DecompressionStream('deflate');
+    const buf = await new Response(new Blob([b64bytes(z[1])]).stream().pipeThrough(ds)).arrayBuffer();
+    return JSON.parse(new TextDecoder().decode(buf));
+  }
+  const d = location.hash.match(/[#&]d=([^&]+)/);
+  return d ? JSON.parse(new TextDecoder().decode(b64bytes(d[1]))) : null;
+}
+
+const WD = ['日', '一', '二', '三', '四', '五', '六'];
+let P = null, q = '', group = '', open = -1;
+let Y = 0, M = 0, TODAY = 0;
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"]/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+async function init() {
+  let err = null;
+  try { P = await readPayload(); } catch (e) { err = e.message; }
+  if (!P) {
+    document.getElementById('app').innerHTML = err === 'NO_DS'
+      ? '<div class="err">Telegram 內建瀏覽器太舊，無法解壓縮資料。<br>請更新後再試，或用 /coworker_schedule 的逐步版。</div>'
+      : '<div class="err">缺少資料。<br>請回 Telegram 用 /coworker_web 重新開啟。</div>';
+    return;
+  }
+  Y = +P.m.slice(0, 4); M = +P.m.slice(5, 7);
+  const now = new Date();
+  TODAY = (now.getFullYear() === Y && now.getMonth() + 1 === M) ? now.getDate() : 0;
+  render();
+}
+
+const weekend = d => { const w = new Date(Y, M - 1, d).getDay(); return w === 0 || w === 6; };
+const isHol = d => Object.prototype.hasOwnProperty.call(P.hol, String(d));
+
+function match(r) {
+  if (group && r.g !== group) return false;
+  if (!q) return true;
+  const s = q.toLowerCase();
+  return r.n.toLowerCase().includes(s) || (r.g || '').toLowerCase().includes(s);
+}
+
+function bar(r) {
+  let out = '';
+  for (let d = 1; d <= P.days; d++) {
+    const c = [r.s[d - 1] === '.' ? (weekend(d) ? 'we' : '') : r.s[d - 1]];
+    if (d === TODAY) c.push('td');
+    out += `<i class="${c.join(' ')}"></i>`;
+  }
+  return `<div class="bar">${out}</div>`;
+}
+
+function cal(r) {
+  const first = new Date(Y, M - 1, 1).getDay();
+  const cells = [];
+  for (let i = 0; i < first; i++) cells.push(null);
+  for (let d = 1; d <= P.days; d++) cells.push(d);
+  while (cells.length % 7) cells.push(null);
+
+  let rows = '';
+  for (let i = 0; i < cells.length; i += 7) {
+    rows += '<tr>' + cells.slice(i, i + 7).map(d => {
+      if (d === null) return '<td><div class="d blank"></div></td>';
+      const st = r.s[d - 1];
+      const c = ['d'];
+      if (st === '.') { if (weekend(d)) c.push('we'); } else c.push(st);
+      if (d === TODAY) c.push('td');
+      const note = r.v[d] || (isHol(d) ? (P.hol[d] || '假日') : '');
+      return `<td><div class="${c.join(' ')}">${d}${note
+        ? `<small>${esc(note.slice(0, 4))}</small>` : ''}</div></td>`;
+    }).join('') + '</tr>';
+  }
+
+  const cnt = k => [...r.s].filter(x => x === k).length;
+  const days = [...r.s].map((x, i) => [x, i + 1]).filter(([x]) => x === 'o' || x === 'h')
+    .map(([, d]) => d).join('、');
+  // 今天的「未完整」多半只是還沒打下班卡，不該算進異常（同 punchtime.html 的「上班中」）
+  const todayLive = TODAY && r.s[TODAY - 1] === 'x';
+  const odd = cnt('x') - (todayLive ? 1 : 0);
+  return `<div class="cal">
+    <table><thead><tr>${WD.map((w, i) =>
+      `<th class="${i === 0 || i === 6 ? 'wh' : ''}">${w}</th>`).join('')}</tr></thead>
+      <tbody>${rows}</tbody></table>
+    <div class="sum">休假 ${cnt('o')} 天${cnt('h') ? `　半天假 ${cnt('h')} 天` : ''}
+      　出勤 ${cnt('w') + (todayLive ? 1 : 0)} 天${odd
+        ? `　<span style="color:var(--odd)">打卡未完整 ${odd} 天</span>` : ''}
+      ${todayLive ? '　🕒 今天上班中' : ''}
+      ${days ? `<br>休假日：${days}` : ''}</div>
+  </div>`;
+}
+
+function rowHtml(r) {
+  const i = P.rows.indexOf(r);
+  const off = [...r.s].filter(x => x === 'o' || x === 'h').length;
+  return `<div class="row${open === i ? ' open' : ''}" data-i="${i}">
+    <div class="top">
+      <span class="nm${P.me && r.n.toLowerCase() === P.me.toLowerCase() ? ' me' : ''}">${esc(r.n)}</span>
+      <span class="gp">${esc(r.g)}</span>
+      <span class="n">休 ${off}</span>
+      <span class="ct">${esc(r.t)}</span>
+    </div>
+    ${bar(r)}
+    ${open === i ? cal(r) : ''}
+  </div>`;
+}
+
+function render() {
+  const hits = P.rows.filter(match);
+  const list = hits.length ? hits.map(rowHtml).join('')
+    : '<div class="empty">找不到符合的同事</div>';
+
+  document.getElementById('app').innerHTML = `
+    <h1>同事班表</h1>
+    <div class="sub">${esc(P.m)}　·　${P.rows.length} 人　·　快取更新於 ${esc(P.f)}</div>
+    <div class="tools">
+      <input type="search" id="q" placeholder="搜尋姓名或部門…" value="${esc(q)}">
+    </div>
+    <div class="chips">
+      <button class="chip${group ? '' : ' on'}" data-g="">全部 (${P.rows.length})</button>
+      ${P.groups.map(g => {
+        const n = P.rows.filter(r => r.g === g).length;
+        return `<button class="chip${group === g ? ' on' : ''}" data-g="${esc(g)}">${esc(g)} (${n})</button>`;
+      }).join('')}
+    </div>
+    <div class="list">${list}</div>
+    <div class="legend">
+      點一列展開整月月曆　·　共 ${hits.length} 人符合<br>
+      <span class="k" style="background:var(--off)"></span>整天休假
+      <span class="k" style="background:var(--half)"></span>半天假
+      <span class="k" style="background:var(--accent)"></span>出勤
+      <span class="k" style="background:var(--odd)"></span>打卡未完整
+      <span class="k" style="background:var(--we)"></span>週末/無紀錄<br>
+      <b>不含實際打卡時刻</b>——要看幾點打的卡請用「部門打卡記錄」那頁
+    </div>`;
+
+  // 搜尋框不重繪整頁（會失焦），只重畫清單
+  const inp = document.getElementById('q');
+  inp.addEventListener('input', e => { q = e.target.value; open = -1; renderList(); });
+  document.querySelectorAll('.chip').forEach(el =>
+    el.addEventListener('click', () => { group = el.dataset.g; open = -1; render(); }));
+  bindRows();
+}
+
+function bindRows() {
+  document.querySelectorAll('.row').forEach(el =>
+    el.addEventListener('click', () => {
+      const i = +el.dataset.i;
+      open = (open === i) ? -1 : i;
+      renderList();
+    }));
+}
+
+function renderList() {
+  const hits = P.rows.filter(match);
+  document.querySelector('.list').innerHTML = hits.length ? hits.map(rowHtml).join('')
+    : '<div class="empty">找不到符合的同事</div>';
+  bindRows();
+}
+
+init();
+</script>
+</body>
+</html>
