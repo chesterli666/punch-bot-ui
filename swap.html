@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>調假申請</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root{
+    --bg:#0b1014; --card:#111a20; --line-soft:#22303a;
+    --fg:#e8f2ec; --dim:#7d9a8b; --accent:#22c55e; --warn:#f59e0b; --title:#f97316;
+    --dst:#38bdf8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+       -webkit-tap-highlight-color:transparent;padding:12px}
+  h1{margin:.2em 0 .1em;font-size:1.4rem;text-align:center;color:var(--title)}
+  .sub{text-align:center;color:var(--dim);font-size:.76rem;margin-bottom:12px}
+  .sec{background:var(--card);border:1px solid var(--line-soft);border-radius:12px;
+       padding:12px;margin-bottom:10px}
+  .lb{font-size:.8rem;color:var(--dim);margin-bottom:8px}
+  .lb b{color:var(--accent)}
+  .lb b.d{color:var(--dst)}
+
+  /* 兩段式：先選原始休假日，再選變更後休假日 */
+  .steps{display:flex;gap:6px;margin-bottom:10px}
+  .step{flex:1;padding:9px 6px;border:1px solid var(--line-soft);background:#16222a;
+        color:var(--dim);border-radius:10px;font-size:.8rem;font-family:inherit;
+        cursor:pointer;text-align:center;line-height:1.4}
+  .step.on{border-color:var(--accent);color:var(--fg);font-weight:700}
+  .step.on.dst{border-color:var(--dst)}
+  .step .v{display:block;font-size:.72rem;color:var(--accent)}
+  .step.dstv .v{color:var(--dst)}
+
+  textarea{width:100%;padding:10px;border-radius:8px;background:#16222a;color:var(--fg);
+    border:1px solid var(--line-soft);font-family:inherit;font-size:.9rem;
+    resize:vertical;min-height:64px}
+
+  .mnav{display:flex;align-items:center;justify-content:center;gap:14px;margin-bottom:6px}
+  .mnav .mt{font-weight:700;min-width:8em;text-align:center}
+  .marrow{border:0;background:transparent;color:var(--accent);font-size:1.1rem;
+          padding:4px 10px;cursor:pointer;font-family:inherit}
+  .marrow[disabled]{color:#33413a;cursor:default}
+  table{width:100%;border-collapse:separate;border-spacing:3px;table-layout:fixed}
+  th{color:var(--dim);font-weight:500;font-size:.74rem;padding-bottom:2px}
+  th.we{color:var(--accent)}
+  .day{width:100%;aspect-ratio:1/1;border:0;border-radius:8px;background:#1a242b;color:#cfe0d6;
+       font-size:.9rem;font-family:inherit;cursor:pointer;display:flex;flex-direction:column;
+       align-items:center;justify-content:center;line-height:1.1}
+  .day.blank{background:transparent;cursor:default}
+  .day.hol{background:#2a2016;color:var(--warn)}
+  .day.off{background:#1b2b34;color:#7fc4dd}            /* 自己的休假日 */
+  .day.mute{opacity:.22;cursor:not-allowed}             /* 這一步不可點 */
+  .day.on{background:var(--accent);color:#06210f;font-weight:700}
+  .day.on.dst{background:var(--dst);color:#04202b}
+  .day small{font-size:.5rem;opacity:.85}
+
+  .warn{color:var(--warn);font-size:.78rem;margin-top:6px;line-height:1.6}
+  .bar{display:flex;gap:8px;margin-top:14px}
+  .submit{flex:1;padding:15px 8px;border:0;border-radius:12px;
+          background:var(--accent);color:#06210f;font-size:1rem;font-weight:700;
+          font-family:inherit;cursor:pointer;box-shadow:0 6px 20px #0008}
+  .submit.ghost{flex:0 0 34%;background:#16222a;color:var(--fg);
+                border:1px solid var(--line-soft);box-shadow:none}
+  .submit[disabled]{background:#2b3a33;color:#6b7f74;box-shadow:none;border-color:transparent}
+  .drynote{text-align:center;font-size:.72rem;color:var(--warn);margin-top:8px}
+  .err{padding:28px;text-align:center;color:var(--warn);line-height:2}
+</style>
+</head>
+<body>
+<div id="app"><div class="sub">載入中…</div></div>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+function b64bytes(s) {
+  const b = atob(s.replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(b, c => c.charCodeAt(0));
+}
+async function readPayload() {
+  const z = location.hash.match(/[#&]z=([^&]+)/);
+  if (z) {
+    if (!window.DecompressionStream) throw new Error('NO_DS');
+    const ds = new DecompressionStream('deflate');
+    const buf = await new Response(new Blob([b64bytes(z[1])]).stream().pipeThrough(ds)).arrayBuffer();
+    return JSON.parse(new TextDecoder().decode(buf));
+  }
+  const d = location.hash.match(/[#&]d=([^&]+)/);
+  return d ? JSON.parse(new TextDecoder().decode(b64bytes(d[1]))) : null;
+}
+
+const WD = ['日', '一', '二', '三', '四', '五', '六'];
+let P = null, step = 'src', src = '', dst = '', reason = '', mi = 0;
+
+async function init() {
+  let err = null;
+  try { P = await readPayload(); } catch (e) { err = e.message; }
+  if (!P) {
+    document.getElementById('app').innerHTML = err === 'NO_DS'
+      ? '<div class="err">Telegram 內建瀏覽器太舊，無法解壓縮資料。<br>請更新後再試，或用 /swap 的逐步版。</div>'
+      : '<div class="err">缺少資料。<br>請回 Telegram 用 /swap_web 重新開啟。</div>';
+    return;
+  }
+  render();
+}
+
+const cur = () => P.months[mi];
+
+/* 原始休假日只能點自己的休假日（與 /swap 的月曆限制一致）；變更後休假日任一未來日都可以 */
+function canPick(b, d) {
+  if (d < b.min) return false;
+  return step === 'src' ? b.off.includes(d) : true;
+}
+
+function pick(ds) {
+  if (step === 'src') {
+    src = ds;
+    if (dst === ds) dst = '';        // 兩欄不能同一天
+    step = 'dst';                    // 選完自動跳下一步，少按一下
+  } else {
+    if (ds === src) return;
+    dst = ds;
+  }
+  render();
+}
+
+function render() {
+  const b = cur(), y = +b.m.slice(0, 4), mo = +b.m.slice(5, 7);
+  const first = new Date(y, mo - 1, 1).getDay();
+  const cells = [];
+  for (let i = 0; i < first; i++) cells.push(null);
+  for (let d = 1; d <= b.days; d++) cells.push(d);
+  while (cells.length % 7) cells.push(null);
+
+  let rows = '';
+  for (let i = 0; i < cells.length; i += 7) {
+    rows += '<tr>' + cells.slice(i, i + 7).map(d => {
+      if (d === null) return '<td><div class="day blank"></div></td>';
+      const ds = `${b.m}-${String(d).padStart(2, '0')}`;
+      const w = new Date(y, mo - 1, d).getDay();
+      const holName = b.hol[d];
+      const isOff = b.off.includes(d);
+      const c = ['day'];
+      if (holName || w === 0 || w === 6) c.push('hol');
+      if (isOff) c.push('off');
+      if (!canPick(b, d)) c.push('mute');
+      if (ds === src) c.push('on');
+      if (ds === dst) c.push('on', 'dst');
+      const tag = isOff ? '<small>休</small>'
+        : holName ? `<small>${holName.slice(0, 3)}</small>` : '';
+      return `<td><div class="${c.join(' ')}" data-ds="${canPick(b, d) ? ds : ''}">${d}${tag}</div></td>`;
+    }).join('') + '</tr>';
+  }
+
+  const monthOff = b.off.filter(d => d >= b.min).length;
+  const ready = src && dst;
+
+  document.getElementById('app').innerHTML = `
+    <h1>調假申請</h1>
+    <div class="sub">${P.user || ''}　·　一張單換一天</div>
+
+    <div class="sec">
+      <div class="steps">
+        <button class="step${step === 'src' ? ' on' : ''}" data-s="src">原始休假日
+          <span class="v">${src ? src.slice(5) : '未選'}</span></button>
+        <button class="step dstv${step === 'dst' ? ' on dst' : ''}" data-s="dst">變更後休假日
+          <span class="v">${dst ? dst.slice(5) : '未選'}</span></button>
+      </div>
+      <div class="lb">${step === 'src'
+        ? '請點選要被調整的<b>原始休假日</b>（只有你的休假日可點）'
+        : '請點選調到哪一天當<b class="d">新的休假日</b>'}</div>
+      <div class="mnav">
+        <button class="marrow" id="mp"${mi === 0 ? ' disabled' : ''}>◀</button>
+        <span class="mt">${b.m}</span>
+        <button class="marrow" id="mn"${mi === P.months.length - 1 ? ' disabled' : ''}>▶</button>
+      </div>
+      <table>
+        <thead><tr>${WD.map((w, i) =>
+          `<th class="${i === 0 || i === 6 ? 'we' : ''}">${w}</th>`).join('')}</tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      ${step === 'src' && !monthOff ? `<div class="warn">⚠️ ${b.m} 本機班表沒有可選的休假日，
+        請翻月，或回 Telegram 跑 /schedule_sync 更新班表。</div>` : ''}
+    </div>
+
+    <div class="sec">
+      <div class="lb">事由</div>
+      <textarea id="rs" placeholder="選填">${reason}</textarea>
+    </div>
+
+    <div class="bar">
+      <button class="submit ghost" id="prev"${ready ? '' : ' disabled'}>👀 預覽</button>
+      <button class="submit" id="go"${ready ? '' : ' disabled'}>
+        ✅ 確認送出${ready ? `（${src.slice(5)}→${dst.slice(5)}）` : ''}</button>
+    </div>
+    ${P.dry ? '<div class="drynote">⚠️ 目前是測試模式（config.ini dry=1），兩顆都不會真的送出</div>' : ''}`;
+
+  document.querySelectorAll('.step').forEach(el =>
+    el.addEventListener('click', () => { step = el.dataset.s; render(); }));
+  document.querySelectorAll('.day[data-ds]').forEach(el => {
+    if (el.dataset.ds) el.addEventListener('click', () => pick(el.dataset.ds));
+  });
+  document.getElementById('mp').addEventListener('click', () => { if (mi > 0) { mi--; render(); } });
+  document.getElementById('mn').addEventListener('click', () => {
+    if (mi < P.months.length - 1) { mi++; render(); } });
+  const rs = document.getElementById('rs');
+  rs.addEventListener('input', e => { reason = e.target.value; });   // 不重繪，免得游標跳掉
+  document.getElementById('prev').addEventListener('click', () => submit('dry'));
+  document.getElementById('go').addEventListener('click', () => submit('send'));
+}
+
+function submit(mode) {
+  const payload = { kind: 'swap', nonce: P.nonce || '', mode, src, dst, reason };
+  if (!tg || !tg.sendData) { alert(JSON.stringify(payload, null, 2)); return; }
+  tg.sendData(JSON.stringify(payload));
+}
+
+init();
+</script>
+</body>
+</html>
