@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>簽核狀態</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root{
+    --bg:#0b1014; --card:#111a20; --line-soft:#22303a;
+    --fg:#e8f2ec; --dim:#7d9a8b; --accent:#22c55e; --warn:#f59e0b;
+    --bad:#ef4444; --title:#f97316;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+       -webkit-tap-highlight-color:transparent;padding:10px 0}
+  h1{margin:.1em 10px .1em;font-size:1.2rem;text-align:center;color:var(--title)}
+  .sub{text-align:center;color:var(--dim);font-size:.76rem;margin-bottom:8px}
+
+  /* 頁籤＝三種狀態。文字版是三段疊著捲，這裡切一下就只剩要追的那批 */
+  .seg{display:flex;gap:6px;padding:0 10px 8px}
+  .seg button{flex:1;padding:9px 4px;border-radius:9px;background:#16222a;color:var(--dim);
+    border:1px solid var(--line-soft);font-family:inherit;font-size:.8rem;cursor:pointer}
+  /* 選中的分頁用該狀態自己的顏色（否決頁還亮綠色會跟語意打架），色值由 JS 帶 */
+  .seg button.on{font-weight:700;background:#16222a}
+
+  .tools{display:flex;gap:8px;padding:0 10px 8px}
+  input[type=search]{flex:1;min-width:0;padding:9px 12px;border-radius:8px;background:#16222a;
+    color:var(--fg);border:1px solid var(--line-soft);font-family:inherit;font-size:.9rem}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;padding:0 10px 8px}
+  .chip{border:1px solid var(--line-soft);background:#16222a;color:var(--dim);border-radius:999px;
+        padding:6px 11px;font-size:.76rem;font-family:inherit;cursor:pointer;white-space:nowrap}
+  .chip.on{border-color:var(--accent);color:var(--accent);background:#132a1e}
+
+  .list{padding:0 10px}
+  /* 左緣色條＝狀態，掃一眼就看得出哪幾張還沒下文 */
+  .row{background:var(--card);border:1px solid var(--line-soft);border-left-width:4px;
+       border-radius:8px;padding:8px 10px;margin-bottom:6px;cursor:pointer}
+  .r1{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
+  .st{font-size:.76rem;font-weight:700}
+  .cat{font-size:.86rem;font-weight:700}
+  .lv{font-size:.72rem;color:var(--dim)}
+  .no{font-size:.68rem;color:var(--dim);margin-left:auto;white-space:nowrap}
+  .when{font-size:.8rem;color:#cfe0d6;margin-top:4px;word-break:break-all}
+  .meta{font-size:.68rem;color:var(--dim);margin-top:3px}
+
+  /* 明細：文字版塞不下的逐筆時段與理由，點開才顯示 */
+  .det{margin-top:7px;padding-top:7px;border-top:1px dashed var(--line-soft);
+       font-size:.74rem;color:#cfe0d6;line-height:1.75;word-break:break-all}
+  .det b{color:var(--dim);font-weight:700}
+  .days{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px}
+  .days span{background:#16222a;border:1px solid var(--line-soft);border-radius:5px;
+             padding:2px 6px;font-size:.7rem}
+
+  .legend{padding:10px;color:var(--dim);font-size:.72rem;line-height:1.9;text-align:center}
+  .empty{padding:24px;text-align:center;color:var(--dim)}
+  .err{padding:28px;text-align:center;color:var(--warn);line-height:2}
+</style>
+</head>
+<body>
+<div id="app"><div class="sub">載入中…</div></div>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+function b64bytes(s) {
+  const b = atob(s.replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(b, c => c.charCodeAt(0));
+}
+async function readPayload() {
+  const z = location.hash.match(/[#&]z=([^&]+)/);
+  if (z) {
+    if (!window.DecompressionStream) throw new Error('NO_DS');
+    const ds = new DecompressionStream('deflate');
+    const buf = await new Response(new Blob([b64bytes(z[1])]).stream().pipeThrough(ds)).arrayBuffer();
+    return JSON.parse(new TextDecoder().decode(buf));
+  }
+  const d = location.hash.match(/[#&]d=([^&]+)/);
+  return d ? JSON.parse(new TextDecoder().decode(b64bytes(d[1]))) : null;
+}
+
+/* verify 語意跟 signoff.py 的 STATUS 一致：1=否決、2/3=處理中、4=核准 */
+const ST = {
+  1: { label: '❌ 已否決', color: '#ef4444', tab: 'bad' },
+  2: { label: '⏳ 處理中', color: '#f59e0b', tab: 'pend' },
+  3: { label: '⏳ 處理中', color: '#f59e0b', tab: 'pend' },
+  4: { label: '✅ 已核准', color: '#22c55e', tab: 'ok' },
+};
+function stOf(v) { return ST[v] || { label: '？(' + v + ')', color: '#7d9a8b', tab: 'other' }; }
+
+let P = null, tab = 'pend', cat = -1, q = '', open = new Set();
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"]/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+/* 時段摘要，規則同 signoff._fmt_when：有帶時間（打卡修改／提早延後）就顯示時間，
+   否則只列日期；多天只給頭尾＋天數，逐筆留給明細 */
+function whenText(o) {
+  const spans = (o.t || []).filter(x => x.includes('~'));
+  if (spans.length) return spans.slice(0, 2).join('、') + (spans.length > 2 ? ' 等 ' + spans.length + ' 筆' : '');
+  const d = o.d || [];
+  if (!d.length) return '－';
+  if (d.length === 1) return d[0];
+  return d[0] + ' ～ ' + d[d.length - 1] + '　共 ' + d.length + ' 天';
+}
+
+function match(o) {
+  if (tab !== 'all' && stOf(o.v).tab !== tab) return false;
+  if (cat >= 0 && o.c !== cat) return false;
+  if (q) {
+    const s = q.toLowerCase();
+    const hay = [P.c[o.c], P.l[o.l], String(o.i), o.r, (o.d || []).join(' '), (o.t || []).join(' ')]
+      .join(' ').toLowerCase();
+    if (!hay.includes(s)) return false;
+  }
+  return true;
+}
+
+function detailHtml(o) {
+  let out = '';
+  const items = (o.t || []).length ? o.t : (o.d || []);
+  if (items.length) {
+    out += '<div><b>時段</b><div class="days">'
+         + items.map(x => '<span>' + esc(x) + '</span>').join('') + '</div></div>';
+  }
+  out += '<div><b>送出</b> ' + esc(o.ca || '－');
+  if (o.ua && o.ua !== o.ca) out += '　<b>最後更新</b> ' + esc(o.ua);
+  out += '</div>';
+  if (o.r) out += '<div><b>理由</b> ' + esc(o.r) + '</div>';
+  return '<div class="det">' + out + '</div>';
+}
+
+function rowHtml(o) {
+  const s = stOf(o.v);
+  const lv = P.l[o.l] ? '<span class="lv">（' + esc(P.l[o.l]) + '）</span>' : '';
+  return '<div class="row" data-i="' + o.i + '" style="border-left-color:' + s.color + '">'
+    + '<div class="r1">'
+    + '<span class="st" style="color:' + s.color + '">' + esc(s.label) + '</span>'
+    + '<span class="cat">' + esc(P.c[o.c]) + '</span>' + lv
+    + '<span class="no">#' + o.i + '</span>'
+    + '</div>'
+    + '<div class="when">' + esc(whenText(o)) + '</div>'
+    + '<div class="meta">送出 ' + esc(o.ca || '－') + '　·　點一下看明細</div>'
+    + (open.has(o.i) ? detailHtml(o) : '')
+    + '</div>';
+}
+
+function renderList() {
+  const hits = P.o.filter(match);
+  document.getElementById('list').innerHTML = hits.length
+    ? hits.map(rowHtml).join('')
+    : '<div class="empty">沒有符合的申請單</div>';
+  document.getElementById('cnt').textContent = hits.length + ' 筆';
+  document.querySelectorAll('.row').forEach(el => el.addEventListener('click', () => {
+    const i = +el.dataset.i;
+    if (open.has(i)) open.delete(i); else open.add(i);
+    renderList();                       // 只重畫清單，搜尋框不會失焦
+  }));
+}
+
+function tabCount(t) { return P.o.filter(o => stOf(o.v).tab === t).length; }
+
+/* 分頁按鈕：選中時邊框與文字用該狀態的顏色（全部＝綠） */
+const TAB_COLOR = { pend: '#f59e0b', ok: '#22c55e', bad: '#ef4444', all: '#22c55e' };
+function segBtn(t, label) {
+  const on = tab === t;
+  const c = TAB_COLOR[t];
+  return '<button data-t="' + t + '"' + (on ? ' class="on"' : '')
+    + (on ? ' style="border-color:' + c + ';color:' + c + '"' : '') + '>' + label + '</button>';
+}
+
+function render() {
+  // 類別 chip 各標筆數；只有一種類別時整排省掉（大部分人只送休假申請）
+  const catCnt = {};
+  for (const o of P.o) catCnt[o.c] = (catCnt[o.c] || 0) + 1;
+  const catChips = Object.keys(catCnt).map(Number).sort((a, b) => catCnt[b] - catCnt[a])
+    .map(i => '<button class="chip' + (cat === i ? ' on' : '') + '" data-c="' + i + '">'
+              + esc(P.c[i]) + ' (' + catCnt[i] + ')</button>').join('');
+
+  document.getElementById('app').innerHTML =
+    '<h1>🗂 簽核狀態</h1>'
+    + '<div class="sub">共 ' + P.o.length + ' 張單　·　更新於 ' + esc(P.f || '－')
+    + '　·　<span id="cnt"></span></div>'
+    + '<div class="seg">'
+    + segBtn('pend', '⏳ 處理中 (' + tabCount('pend') + ')')
+    + segBtn('ok', '✅ 核准 (' + tabCount('ok') + ')')
+    + segBtn('bad', '❌ 否決 (' + tabCount('bad') + ')')
+    + segBtn('all', '全部 (' + P.o.length + ')')
+    + '</div>'
+    + '<div class="tools"><input type="search" id="q" placeholder="搜尋類別、假別、單號或理由…" value="' + esc(q) + '"></div>'
+    + (Object.keys(catCnt).length > 1
+        ? '<div class="chips" id="cchips"><button class="chip' + (cat < 0 ? ' on' : '')
+          + '" data-c="-1">全部類別</button>' + catChips + '</div>'
+        : '')
+    + '<div class="list" id="list"></div>'
+    + '<div class="legend">'
+    + '新的在上（依最後更新排序）。點一張單可展開逐筆時段與理由<br>'
+    + '此頁唯讀，只把本機快取畫出來，不會連公司系統、也不會審核或撤單<br>'
+    + '要抓最新狀態請回 Telegram 按「🔄 重新抓取」'
+    + '</div>';
+  renderList();
+  document.querySelectorAll('.seg button').forEach(el =>
+    el.addEventListener('click', () => { tab = el.dataset.t; render(); }));
+  document.querySelectorAll('#cchips .chip').forEach(el =>
+    el.addEventListener('click', () => { cat = +el.dataset.c; render(); }));
+  document.getElementById('q').addEventListener('input', e => { q = e.target.value; renderList(); });
+}
+
+async function init() {
+  let err = null;
+  try { P = await readPayload(); } catch (e) { err = e.message; }
+  if (!P) {
+    document.getElementById('app').innerHTML = err === 'NO_DS'
+      ? '<div class="err">Telegram 內建瀏覽器太舊，無法解壓縮資料。<br>請更新後再試，或用文字版 /signoff。</div>'
+      : '<div class="err">缺少資料。<br>請回 Telegram 用 /signoff_web 重新開啟。</div>';
+    return;
+  }
+  // 預設停在「處理中」——那才是會想追的；一張都沒有就退回全部，免得開起來是空的
+  if (!P.o.some(o => stOf(o.v).tab === 'pend')) tab = 'all';
+  render();
+}
+init();
+</script>
+</body>
+</html>

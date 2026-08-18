@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>每日休假人數</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root{
+    --bg:#0b1014; --card:#111a20; --line-soft:#22303a;
+    --fg:#e8f2ec; --dim:#7d9a8b; --accent:#22c55e; --warn:#f59e0b;
+    --bad:#ef4444; --title:#f97316; --bar:#2196f3; --me:#22c55e;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+       -webkit-tap-highlight-color:transparent;padding:10px 0}
+  h1{margin:.1em 10px .1em;font-size:1.2rem;text-align:center;color:var(--title)}
+  .sub{text-align:center;color:var(--dim);font-size:.76rem;margin-bottom:8px;line-height:1.7}
+
+  .seg{display:flex;gap:6px;padding:0 10px 8px;overflow-x:auto}
+  .seg button{flex:0 0 auto;padding:8px 12px;border-radius:9px;background:#16222a;color:var(--dim);
+    border:1px solid var(--line-soft);font-family:inherit;font-size:.82rem;cursor:pointer}
+  .seg button.on{border-color:var(--accent);color:var(--accent);background:#132a1e;font-weight:700}
+
+  .chips{display:flex;flex-wrap:wrap;gap:6px;padding:0 10px 8px}
+  .chip{border:1px solid var(--line-soft);background:#16222a;color:var(--dim);border-radius:999px;
+        padding:6px 11px;font-size:.76rem;font-family:inherit;cursor:pointer;white-space:nowrap}
+  .chip.on{border-color:var(--accent);color:var(--accent);background:#132a1e}
+
+  /* 長條圖：橫向捲動（31 天塞不進手機寬度），一日一欄，點欄位看當天名單 */
+  .chartwrap{overflow-x:auto;padding:4px 10px 0;-webkit-overflow-scrolling:touch}
+  .chart{display:flex;align-items:flex-end;gap:3px;min-width:max-content;padding-bottom:4px}
+  .col{width:30px;text-align:center;border-radius:5px;padding:2px 1px;cursor:pointer;
+       background:transparent;border:1px solid transparent}
+  .col.we{background:#1a1417}                        /* 週末底色 */
+  .col.td{border-color:var(--warn)}                  /* 今天 */
+  .col.sel{border-color:var(--accent);background:#132a1e}
+  .cnt{font-size:.68rem;color:#9fc4ff;font-weight:700;height:14px}
+  .bar{background:var(--bar);border-radius:3px 3px 0 0;margin:0 5px;min-height:2px}
+  .bar.full{background:#4b5563}                      /* 全公司都休的日子：不搶眼 */
+  .bar.mine{background:var(--me)}                    /* 自己有休的日子 */
+  .dl{font-size:.66rem;color:var(--dim);margin-top:3px;line-height:1.25}
+  .dl small{font-size:.6rem;color:#5c7568}
+
+  .panel{background:var(--card);border:1px solid var(--line-soft);border-radius:10px;
+         padding:10px 12px;margin:8px 10px 0}
+  .ph{font-size:.86rem;font-weight:700;margin-bottom:6px}
+  .ph .n{color:var(--warn)}
+  .names{display:flex;flex-wrap:wrap;gap:5px}
+  .names span{background:#16222a;border:1px solid var(--line-soft);border-radius:6px;
+              padding:3px 8px;font-size:.76rem;color:#cfe0d6}
+  .names span.me{border-color:var(--me);color:var(--me);font-weight:700}
+  .names span .g{color:var(--dim);font-size:.66rem;margin-left:4px}
+  .tip{color:var(--dim);font-size:.74rem}
+
+  .legend{padding:12px 10px 16px;color:var(--dim);font-size:.72rem;line-height:1.9;text-align:center}
+  .err{padding:28px;text-align:center;color:var(--warn);line-height:2}
+</style>
+</head>
+<body>
+<div id="app"><div class="sub">載入中…</div></div>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+function b64bytes(s) {
+  const b = atob(s.replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(b, c => c.charCodeAt(0));
+}
+async function readPayload() {
+  const z = location.hash.match(/[#&]z=([^&]+)/);
+  if (z) {
+    if (!window.DecompressionStream) throw new Error('NO_DS');
+    const ds = new DecompressionStream('deflate');
+    const buf = await new Response(new Blob([b64bytes(z[1])]).stream().pipeThrough(ds)).arrayBuffer();
+    return JSON.parse(new TextDecoder().decode(buf));
+  }
+  const d = location.hash.match(/[#&]d=([^&]+)/);
+  return d ? JSON.parse(new TextDecoder().decode(b64bytes(d[1]))) : null;
+}
+
+const WD = ['一', '二', '三', '四', '五', '六', '日'];
+let P = null, month = '', grp = null, sel = null;   // grp=null 代表全部門
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"]/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+/* 目前部門篩選下的人員索引集合；null＝全部門 */
+function inGroup(i) { return grp === null || P.n[i][1] === grp; }
+function groupSize() { return grp === null ? P.n.length : P.n.filter(x => x[1] === grp).length; }
+
+/* 某日在目前篩選下休假的人（索引陣列），自己排最前面 */
+function dayPeople(d) {
+  const raw = (P.d[month] || {})[String(d)] || [];
+  const hit = raw.filter(inGroup);
+  return hit.sort((a, b) => (a === P.me ? -1 : b === P.me ? 1 : 0));
+}
+
+function daysInMonth(m) {
+  const [y, mo] = m.split('-').map(Number);
+  return new Date(y, mo, 0).getDate();
+}
+function weekday(m, d) {
+  const [y, mo] = m.split('-').map(Number);
+  return (new Date(y, mo - 1, d).getDay() + 6) % 7;      // 0=週一
+}
+function iso(m, d) { return m + '-' + String(d).padStart(2, '0'); }
+
+/* 長條高度的刻度基準：**排除「全公司都休」的日子**（週末／國定假日整批休）。
+   不排除的話刻度會被那些日子撐到頂，平日 4~16 人的差別全被壓成同一高度。
+   60% 這條線與 dept_grid 推算公司休日、schedule.html 的熱度刻度是同一個門檻。 */
+function scale() {
+  const total = groupSize() || 1;
+  const all = [];
+  for (let d = 1; d <= daysInMonth(month); d++) all.push(dayPeople(d).length);
+  const normal = all.filter(n => n < total * 0.6);
+  return Math.max(1, ...(normal.length ? normal : all));
+}
+function isFullDay(n) { return n >= (groupSize() || 1) * 0.6; }
+
+function chartHtml() {
+  const max = scale(), total = groupSize();
+  let out = '';
+  for (let d = 1; d <= daysInMonth(month); d++) {
+    const people = dayPeople(d);
+    const n = people.length;
+    const wd = weekday(month, d);
+    const full = isFullDay(n);
+    // 全公司都休的日子不讓它爆版：一律畫到頂，但用灰色表示「不是排班要看的那種擠」
+    const h = n ? (full ? 150 : Math.round(Math.min(n / max, 1) * 150)) : 0;
+    const cls = ['col'];
+    if (wd >= 5) cls.push('we');
+    if (iso(month, d) === P.today) cls.push('td');
+    if (sel === d) cls.push('sel');
+    const bcls = ['bar'];
+    if (full) bcls.push('full');
+    else if (people.includes(P.me)) bcls.push('mine');
+    out += '<div class="' + cls.join(' ') + '" data-d="' + d + '">'
+      + '<div class="cnt">' + (n || '') + '</div>'
+      + '<div class="' + bcls.join(' ') + '" style="height:' + h + 'px"></div>'
+      + '<div class="dl">' + String(d).padStart(2, '0') + '<br><small>' + WD[wd] + '</small></div>'
+      + '</div>';
+  }
+  return '<div class="chartwrap"><div class="chart" id="chart">' + out + '</div></div>'
+    + '<div class="legend" style="padding:6px 10px 0">刻度上限 ' + max
+    + ' 人（不含全公司都休的日子，共 ' + total + ' 人）</div>';
+}
+
+function panelHtml() {
+  if (sel === null) {
+    return '<div class="panel"><div class="tip">👆 點長條看那天休假的是誰</div></div>';
+  }
+  const people = dayPeople(sel);
+  const wd = WD[weekday(month, sel)];
+  if (!people.length) {
+    return '<div class="panel"><div class="ph">' + iso(month, sel) + '（' + wd + '）</div>'
+      + '<div class="tip">這天沒有人休假。</div></div>';
+  }
+  const names = people.map(i => {
+    const [nm, gi] = P.n[i];
+    const g = grp === null ? '<span class="g">' + esc(P.g[gi]) + '</span>' : '';
+    return '<span' + (i === P.me ? ' class="me"' : '') + '>' + esc(nm) + g + '</span>';
+  }).join('');
+  return '<div class="panel">'
+    + '<div class="ph">' + iso(month, sel) + '（' + wd + '）休假 <span class="n">' + people.length + '</span> 人'
+    + (isFullDay(people.length) ? '　<span class="tip">· 全公司都休</span>' : '') + '</div>'
+    + '<div class="names">' + names + '</div></div>';
+}
+
+/* 31 天橫向捲不下，開起來預設停在月初——今天（或剛點的那天）常常在畫面外。
+   每次重畫都把它捲進視野，免得使用者以為那天不見了。 */
+function scrollTo(d) {
+  const wrap = document.querySelector('.chartwrap');
+  const col = document.querySelector('.col[data-d="' + d + '"]');
+  if (!wrap || !col) return;
+  wrap.scrollLeft = Math.max(0, col.offsetLeft - wrap.clientWidth / 2 + col.offsetWidth / 2);
+}
+
+function renderBody() {
+  document.getElementById('body').innerHTML = chartHtml() + panelHtml();
+  document.querySelectorAll('.col').forEach(el => el.addEventListener('click', () => {
+    const d = +el.dataset.d;
+    sel = (sel === d) ? null : d;
+    renderBody();
+  }));
+  // 有選就對準選的那天，否則對準今天（今天不在這個月就維持月初）
+  const focus = sel !== null ? sel : (P.today.slice(0, 7) === month ? +P.today.slice(8) : null);
+  if (focus !== null) scrollTo(focus);
+}
+
+function render() {
+  const gcnt = {};
+  for (const [, gi] of P.n) gcnt[gi] = (gcnt[gi] || 0) + 1;
+  const chips = P.g.map((g, i) =>
+    '<button class="chip' + (grp === i ? ' on' : '') + '" data-g="' + i + '">'
+    + esc(g) + ' (' + (gcnt[i] || 0) + ')</button>').join('');
+
+  document.getElementById('app').innerHTML =
+    '<h1>📊 每日休假人數</h1>'
+    + '<div class="sub">本機快取的月份與部門一次帶進來，換月換部門都在這頁<br>'
+    + '點某天可以看到<b>那天休的是誰</b>（圖片版看不到）</div>'
+    + '<div class="seg">' + P.m.map(m =>
+        '<button data-m="' + m + '"' + (m === month ? ' class="on"' : '') + '>' + m + '</button>').join('')
+      + '</div>'
+    + '<div class="chips"><button class="chip' + (grp === null ? ' on' : '') + '" data-g="">全部門 ('
+      + P.n.length + ')</button>' + chips + '</div>'
+    + '<div id="body"></div>'
+    + '<div class="legend">'
+    + '藍＝一般；<span style="color:var(--me)">綠＝自己那天也休</span>；灰＝全公司都休（週末／國定假日）<br>'
+    + '橘框＝今天，深色底＝週末。人數愈高該日排休愈擠<br>'
+    + '此頁唯讀，只把本機快取畫出來，不會連公司系統'
+    + '</div>';
+
+  renderBody();
+  document.querySelectorAll('.seg button').forEach(el =>
+    el.addEventListener('click', () => { month = el.dataset.m; sel = null; render(); }));
+  document.querySelectorAll('.chip').forEach(el =>
+    el.addEventListener('click', () => { grp = el.dataset.g === '' ? null : +el.dataset.g; render(); }));
+}
+
+async function init() {
+  let err = null;
+  try { P = await readPayload(); } catch (e) { err = e.message; }
+  if (!P) {
+    document.getElementById('app').innerHTML = err === 'NO_DS'
+      ? '<div class="err">Telegram 內建瀏覽器太舊，無法解壓縮資料。<br>請更新後再試，或用 /dept_offchart 圖片版。</div>'
+      : '<div class="err">缺少資料。<br>請回 Telegram 用 /offchart_web 重新開啟。</div>';
+    return;
+  }
+  // 預設停在今天所在的月份，沒有就用第一個有資料的月份
+  month = P.m.includes(P.today.slice(0, 7)) ? P.today.slice(0, 7) : P.m[0];
+  render();
+}
+init();
+</script>
+</body>
+</html>
