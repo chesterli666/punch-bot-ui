@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>變動紀錄</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root{
+    --bg:#0b1014; --card:#111a20; --line-soft:#22303a;
+    --fg:#e8f2ec; --dim:#7d9a8b; --accent:#22c55e; --warn:#f59e0b; --title:#f97316;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+       -webkit-tap-highlight-color:transparent;padding:10px 0}
+  h1{margin:.1em 10px .1em;font-size:1.2rem;text-align:center;color:var(--title)}
+  .sub{text-align:center;color:var(--dim);font-size:.76rem;margin-bottom:8px}
+
+  /* 頁籤：班表變動／打卡變動本來是兩個指令、兩張圖，這裡一次帶進來用切的 */
+  .seg{display:flex;gap:6px;padding:0 10px 8px}
+  .seg button{flex:1;padding:9px 6px;border-radius:9px;background:#16222a;color:var(--dim);
+    border:1px solid var(--line-soft);font-family:inherit;font-size:.82rem;cursor:pointer}
+  .seg button.on{border-color:var(--accent);color:var(--accent);background:#132a1e;font-weight:700}
+
+  .tools{display:flex;gap:8px;padding:0 10px 8px}
+  input[type=search]{flex:1;min-width:0;padding:9px 12px;border-radius:8px;background:#16222a;
+    color:var(--fg);border:1px solid var(--line-soft);font-family:inherit;font-size:.9rem}
+  /* chip 一律換行排（同 coworker.html）：橫向捲動在電腦版右邊的項目點不到 */
+  .chips{display:flex;flex-wrap:wrap;gap:6px;padding:0 10px 8px}
+  .chip{border:1px solid var(--line-soft);background:#16222a;color:var(--dim);border-radius:999px;
+        padding:6px 11px;font-size:.76rem;font-family:inherit;cursor:pointer;white-space:nowrap}
+  .chip.on{border-color:var(--accent);color:var(--accent);background:#132a1e}
+  .chip .sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;
+            vertical-align:-1px}
+
+  .list{padding:0 10px}
+  /* 一列一筆，左緣色條＝變動類型，掃過去就知道哪幾筆是同一種 */
+  .row{background:var(--card);border:1px solid var(--line-soft);border-left-width:4px;
+       border-radius:8px;padding:7px 10px;margin-bottom:6px}
+  .r1{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
+  .kd{font-size:.76rem;font-weight:700}
+  .nm{font-size:.84rem;font-weight:700}
+  .gp{font-size:.7rem;color:var(--dim)}
+  .at{font-size:.68rem;color:var(--dim);margin-left:auto;white-space:nowrap}
+  .dt{font-size:.76rem;color:#cfe0d6;margin-top:3px;word-break:break-all}
+
+  .day{color:var(--dim);font-size:.72rem;padding:8px 2px 4px;font-weight:700}
+  .legend{padding:10px;color:var(--dim);font-size:.72rem;line-height:1.9;text-align:center}
+  .empty{padding:24px;text-align:center;color:var(--dim)}
+  .err{padding:28px;text-align:center;color:var(--warn);line-height:2}
+</style>
+</head>
+<body>
+<div id="app"><div class="sub">載入中…</div></div>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+function b64bytes(s) {
+  const b = atob(s.replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(b, c => c.charCodeAt(0));
+}
+async function readPayload() {
+  const z = location.hash.match(/[#&]z=([^&]+)/);
+  if (z) {
+    if (!window.DecompressionStream) throw new Error('NO_DS');
+    const ds = new DecompressionStream('deflate');
+    const buf = await new Response(new Blob([b64bytes(z[1])]).stream().pipeThrough(ds)).arrayBuffer();
+    return JSON.parse(new TextDecoder().decode(buf));
+  }
+  const d = location.hash.match(/[#&]d=([^&]+)/);
+  return d ? JSON.parse(new TextDecoder().decode(b64bytes(d[1]))) : null;
+}
+
+// 列的欄位順序跟 webapp_bridge.build_changes_payload 一致
+const AT = 0, KI = 1, GI = 2, NI = 3, DT = 4;
+let P = null, tab = 'all', group = '', kind = -1, q = '';
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"]/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+/* 目前頁籤涵蓋哪幾種變動（索引）。'all' 就是全部 */
+function tabKinds() {
+  if (tab === 'sched') return P.sk;
+  if (tab === 'punch') return P.pk;
+  return P.k.map((_, i) => i);
+}
+
+function match(r) {
+  if (!tabKinds().includes(r[KI])) return false;
+  if (kind >= 0 && r[KI] !== kind) return false;
+  if (group && P.g[r[GI]] !== group) return false;
+  if (q) {
+    const s = q.toLowerCase();
+    if (!(P.n[r[NI]].toLowerCase().includes(s) || String(r[DT]).toLowerCase().includes(s)
+          || P.g[r[GI]].toLowerCase().includes(s))) return false;
+  }
+  return true;
+}
+
+function rowHtml(r) {
+  const [key, label, color] = P.k[r[KI]];
+  return `<div class="row" style="border-left-color:${color}">
+    <div class="r1">
+      <span class="kd" style="color:${color}">${esc(label)}</span>
+      <span class="nm">${esc(P.n[r[NI]])}</span>
+      <span class="gp">${esc(P.g[r[GI]])}</span>
+      <span class="at">${esc(r[AT])}</span>
+    </div>
+    <div class="dt">${esc(r[DT])}</div>
+  </div>`;
+}
+
+/* 新的在上，並依偵測日期分段——同一次輪詢常一口氣抓到十幾筆，分段才不會糊成一片 */
+function listHtml(hits) {
+  if (!hits.length) return '<div class="empty">沒有符合的變動紀錄</div>';
+  let out = '', day = '';
+  for (const r of hits) {
+    const d = String(r[AT]).slice(0, 5);
+    if (d !== day) { day = d; out += `<div class="day">${esc(day)}</div>`; }
+    out += rowHtml(r);
+  }
+  return out;
+}
+
+function renderList() {
+  const hits = P.r.filter(match).reverse();      // payload 是舊→新，這裡翻成新的在上
+  document.getElementById('list').innerHTML = listHtml(hits);
+  document.getElementById('cnt').textContent = `${hits.length} 筆`;
+}
+
+function render() {
+  const kinds = tabKinds();
+  // chip 只列**目前頁籤下真的有紀錄**的類型/部門，並各標筆數（點不到空結果）
+  const inTab = P.r.filter(r => kinds.includes(r[KI]));
+  const kindCnt = {}, groupCnt = {};
+  for (const r of inTab) {
+    kindCnt[r[KI]] = (kindCnt[r[KI]] || 0) + 1;
+    groupCnt[P.g[r[GI]]] = (groupCnt[P.g[r[GI]]] || 0) + 1;
+  }
+  if (kind >= 0 && !kindCnt[kind]) kind = -1;          // 切頁籤後原本選的類型可能不在了
+  if (group && !groupCnt[group]) group = '';
+
+  const kindChips = Object.keys(kindCnt).map(Number).sort((a, b) => kindCnt[b] - kindCnt[a])
+    .map(i => `<button class="chip${kind === i ? ' on' : ''}" data-k="${i}">
+        <span class="sw" style="background:${P.k[i][2]}"></span>${esc(P.k[i][1])} (${kindCnt[i]})</button>`).join('');
+  const groupChips = Object.keys(groupCnt).sort((a, b) => groupCnt[b] - groupCnt[a])
+    .map(g => `<button class="chip${group === g ? ' on' : ''}" data-g="${esc(g)}">${esc(g)} (${groupCnt[g]})</button>`).join('');
+
+  document.getElementById('app').innerHTML = `
+    <h1>${esc(P.m)} 變動紀錄</h1>
+    <div class="sub">監看器每 15 分鐘偵測　·　本月共 ${P.r.length} 筆　·　<span id="cnt"></span></div>
+    <div class="seg">
+      <button data-t="all"${tab === 'all' ? ' class="on"' : ''}>全部 (${P.r.length})</button>
+      <button data-t="sched"${tab === 'sched' ? ' class="on"' : ''}>📋 班表 (${P.r.filter(r => P.sk.includes(r[KI])).length})</button>
+      <button data-t="punch"${tab === 'punch' ? ' class="on"' : ''}>🕐 打卡 (${P.r.filter(r => P.pk.includes(r[KI])).length})</button>
+    </div>
+    <div class="tools">
+      <input type="search" id="q" placeholder="搜尋姓名、部門或內容…" value="${esc(q)}">
+    </div>
+    <div class="chips" id="kchips">
+      <button class="chip${kind < 0 ? ' on' : ''}" data-k="-1">全部類型</button>${kindChips}
+    </div>
+    <div class="chips" id="gchips">
+      <button class="chip${group ? '' : ' on'}" data-g="">全部門</button>${groupChips}
+    </div>
+    <div class="list" id="list"></div>
+    <div class="legend">
+      新的在上，依偵測日期分段。只記錄監看器啟用後偵測到的變動<br>
+      （半夜／週末的改動會在下次輪詢時一併偵測）<br>
+      此頁唯讀，只是把本機累積的紀錄畫出來，不會連公司系統。
+    </div>`;
+  renderList();
+  bind();
+}
+
+function bind() {
+  document.querySelectorAll('.seg button').forEach(el =>
+    el.addEventListener('click', () => { tab = el.dataset.t; render(); }));
+  document.querySelectorAll('#kchips .chip').forEach(el =>
+    el.addEventListener('click', () => { kind = +el.dataset.k; render(); }));
+  document.querySelectorAll('#gchips .chip').forEach(el =>
+    el.addEventListener('click', () => { group = el.dataset.g; render(); }));
+  // 搜尋框不重繪整頁（會失焦），只重畫清單
+  const inp = document.getElementById('q');
+  inp.addEventListener('input', e => { q = e.target.value; renderList(); });
+}
+
+async function init() {
+  let err = null;
+  try { P = await readPayload(); } catch (e) { err = e.message; }
+  if (!P) {
+    document.getElementById('app').innerHTML = err === 'NO_DS'
+      ? '<div class="err">Telegram 內建瀏覽器太舊，無法解壓縮資料。<br>請更新後再試，或用 /dept_changes 的圖片版。</div>'
+      : '<div class="err">缺少資料。<br>請回 Telegram 用 /changes_web 重新開啟。</div>';
+    return;
+  }
+  render();
+}
+init();
+</script>
+</body>
+</html>
