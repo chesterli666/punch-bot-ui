@@ -42,6 +42,13 @@
   button.go:disabled{background:#1c2b33;color:var(--dim);cursor:default}
   .note{padding:2px 12px 8px;color:var(--dim);font-size:.7rem;line-height:1.8;text-align:center}
   .err{padding:28px;text-align:center;color:var(--warn);line-height:2}
+  /* 各帳號區塊：跟上面的全域設定用一條分隔線與說明分開，免得看不出誰蓋誰 */
+  .sect{margin:16px 10px 8px;padding-top:12px;border-top:1px solid var(--line-soft)}
+  .sect .st{font-size:.9rem;font-weight:700;color:var(--title)}
+  .sect .sd{font-size:.7rem;color:var(--dim);line-height:1.8;margin-top:3px}
+  .card.off{opacity:.62}
+  .badge{font-size:.66rem;padding:1px 6px;border-radius:99px;border:1px solid var(--line-soft);color:var(--dim)}
+  .sub2{font-size:.72rem;color:var(--dim);margin:6px 0 3px}
 </style>
 </head>
 <body>
@@ -70,6 +77,8 @@ async function readPayload() {
 let P = null;
 // 目前畫面上的值。初值＝config 現值，送出時後端只收「跟現值不一樣」的那幾組
 let cur = { on: ['', ''], off: ['', ''], sync: '' };
+// 各帳號現值：{key: {on:[..], off:[..]}}，初值同樣＝accounts.json 現值
+let curA = {};
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"]/g, c =>
@@ -97,9 +106,19 @@ function readSelect(id) {
 
 /* 有沒有任何一組跟原值不同——沒有就把送出鈕關掉（後端也會擋，這裡只是不要白跑一趟） */
 function dirty() {
-  return cur.on[0] !== P.on[0] || cur.on[1] !== P.on[1]
+  if (cur.on[0] !== P.on[0] || cur.on[1] !== P.on[1]
       || cur.off[0] !== P.off[0] || cur.off[1] !== P.off[1]
-      || cur.sync !== P.sync;
+      || cur.sync !== P.sync) return true;
+  return (P.accts || []).some(a =>
+    curA[a.k].on[0] !== a.on[0] || curA[a.k].on[1] !== a.on[1]
+    || curA[a.k].off[0] !== a.off[0] || curA[a.k].off[1] !== a.off[1]);
+}
+
+/* 全域那組跟哪些帳號其實是同一個值——全域一改就會把它們一起蓋掉，
+   所以有帳號同時被手動改到時要當場講，不能等送出後才發現被覆蓋。 */
+function globalChanged() {
+  return cur.on[0] !== P.on[0] || cur.on[1] !== P.on[1]
+      || cur.off[0] !== P.off[0] || cur.off[1] !== P.off[1];
 }
 
 function refresh() {
@@ -128,6 +147,28 @@ function refresh() {
   sy.className = 'chg' + (samesy ? ' same' : '');
   sy.textContent = samesy ? '未變更（' + P.sync + '）' : '將改為 ' + cur.sync + '（原 ' + P.sync + '）';
 
+  for (const a of (P.accts || [])) {
+    curA[a.k] = { on: [readSelect('a_' + a.k + '_on1'), readSelect('a_' + a.k + '_on2')],
+                  off: [readSelect('a_' + a.k + '_off1'), readSelect('a_' + a.k + '_off2')] };
+    for (const k2 of ['on', 'off']) {
+      const el = document.getElementById('chg_' + a.k + '_' + k2);
+      const v = curA[a.k][k2], o = a[k2];
+      if (v[0] >= v[1]) {
+        el.className = 'chg'; el.style.color = 'var(--bad)';
+        el.textContent = '⚠️ 結束時間要晚於開始時間';
+        bad = true;
+        continue;
+      }
+      el.style.color = '';
+      const same = v[0] === o[0] && v[1] === o[1];
+      el.className = 'chg' + (same ? ' same' : '');
+      el.textContent = same ? '未變更（' + o[0] + '~' + o[1] + '）'
+                            : '將改為 ' + v[0] + '~' + v[1] + '（原 ' + o[0] + '~' + o[1] + '）';
+      // 上面的全域也被改了 → 這格會先被全域蓋過、再被自己蓋回來，講明順序
+      if (!same && globalChanged()) el.textContent += '　（會蓋過上面的全域值）';
+    }
+  }
+
   const go = document.getElementById('go');
   go.disabled = bad || !dirty();
   go.textContent = bad ? '⚠️ 時間順序不對' : (dirty() ? '✅ 送出設定變更' : '沒有變更');
@@ -137,7 +178,7 @@ function submit() {
   if (!tg) { alert('請由 Telegram 開啟'); return; }
   tg.sendData(JSON.stringify({
     kind: 'settings', v: 1, nonce: P.nonce, mode: 'send',
-    on: cur.on, off: cur.off, sync: cur.sync,
+    on: cur.on, off: cur.off, sync: cur.sync, accts: curA,
   }));
   tg.close();
 }
@@ -147,11 +188,42 @@ function nextText(k) {
   return t ? '下次 ' + esc(t) : '';
 }
 
+/* 各帳號的區間。**這才是真正決定打卡的值**——sched.register 拿 accounts.json 的
+   work_start 去建 AutoPunch-In-<帳號>，punch.py 也走 --acct；上面的全域那組是預設，
+   一改就會套到所有啟用中的帳號。原本要改這裡得回 Telegram 的「帳號管理→⏰ 改區段」
+   打兩輪「HH:MM HH:MM」，那是全專案最後一個要打字輸入時刻的地方。 */
+function acctSection() {
+  const list = P.accts || [];
+  if (!list.length) return '';
+  let h = '<div class="sect"><div class="st">👥 各帳號打卡區間</div>'
+        + '<div class="sd">這是實際在跑的值。改上面的全域區間會<b>一起蓋掉所有啟用中的帳號</b>；'
+        + '要讓某個帳號跟別人不一樣，就只改這裡。</div></div>';
+  for (const a of list) {
+    const nx = ((P.next || {}).acct || {})[a.k] || [];
+    h += '<div class="card' + (a.en ? '' : ' off') + '" style="border-left-color:'
+       + (a.en ? 'var(--accent)' : 'var(--line-soft)') + '">'
+       + '<div class="ct"><span class="nm">👤 ' + esc(a.label) + '</span>'
+       + (a.en ? '' : '<span class="badge">已停用</span>')
+       + '<span class="tag">' + (nx[0] ? '上班下次 ' + esc(nx[0]) : '') + '</span></div>'
+       + (a.en ? '' : '<div class="hint">停用中：值照樣存得起來，但不會建排程（啟用時才會建）。</div>')
+       + '<div class="sub2">🟦 上班區間' + (nx[0] ? '　·　下次 ' + esc(nx[0]) : '') + '</div>'
+       + '<div class="times">' + timeSelect('a_' + a.k + '_on1', a.on[0])
+       + '<span class="to">～</span>' + timeSelect('a_' + a.k + '_on2', a.on[1]) + '</div>'
+       + '<div class="chg same" id="chg_' + a.k + '_on"></div>'
+       + '<div class="sub2">🟧 下班區間' + (nx[1] ? '　·　下次 ' + esc(nx[1]) : '') + '</div>'
+       + '<div class="times">' + timeSelect('a_' + a.k + '_off1', a.off[0])
+       + '<span class="to">～</span>' + timeSelect('a_' + a.k + '_off2', a.off[1]) + '</div>'
+       + '<div class="chg same" id="chg_' + a.k + '_off"></div>'
+       + '</div>';
+  }
+  return h;
+}
+
 function render() {
   document.getElementById('app').innerHTML =
     '<h1>⚙️ 設定中心</h1>'
-    + '<div class="sub">打卡區間與每日同步時間，一頁看完也一頁改完<br>'
-    + '（取代「打卡區間／改上班區間／改下班區間／自動同步時間／設定自動同步」五顆）</div>'
+    + '<div class="sub">打卡區間、每日同步、各帳號區間，一頁看完也一頁改完<br>'
+    + '（取代「打卡區間／改上班區間／改下班區間／自動同步時間／設定自動同步」五顆＋帳號管理的「改區段」）</div>'
 
     + '<div class="card" style="border-left-color:var(--on)">'
     + '<div class="ct"><span class="nm">🟦 上班打卡區間</span><span class="tag">' + nextText('on') + '</span></div>'
@@ -170,6 +242,8 @@ function render() {
     + '<div class="hint">每天這個時間自動抓一次個人班表（自動打卡的判斷依據）＋全部門班表（同事查詢）。</div>'
     + '<div class="times">' + timeSelect('sy', P.sync) + '</div>'
     + '<div class="chg same" id="chgSy"></div></div>'
+
+    + acctSection()
 
     + '<div class="note">送出後 Telegram 會先給一張預覽卡，按「確定套用」才真的寫入。<br>'
     + '寫的是本機 config.ini 與 Windows 排程，不會碰公司系統。</div>'
