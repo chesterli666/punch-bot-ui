@@ -10,6 +10,9 @@
     --bg:#0b1014; --card:#111a20; --line-soft:#22303a;
     --fg:#e8f2ec; --dim:#7d9a8b; --accent:#22c55e; --warn:#f59e0b; --title:#f97316;
     --off:#38bdf8; --odd:#f59e0b; --we:#1a1420; --me:#a78bfa;
+    /* 到職等人事異動：系統網頁本來就標紅（red darken-2），這裡沿用紅色，
+       而且刻意跟休假的藍系分開——它不是休假，不能讓人一眼誤讀成有人請假。 */
+    --evt:#ef4444;
     /* 半天假不是換個藍色（使用者回報跟整天休假太近分不出來），而是「只填一半」：
        整天＝實心、半天＝一半藍一半底色。形狀差異一眼就看得出來，不用去比色階。
        是上午還是下午看格子上的字（「上特4H」／「下特4H」），那是既有的假別短名。 */
@@ -49,6 +52,7 @@
   .bar i.we{background:var(--we)}
   .bar i.o{background:var(--off)} .bar i.h{background:var(--halfbg)}
   .bar i.w{background:var(--accent)} .bar i.x{background:var(--odd)}
+  .bar i.e{background:var(--evt)}
   .bar i.td{outline:1px solid #fff;outline-offset:1px}
 
   /* 展開：整月月曆 */
@@ -65,6 +69,7 @@
        text-shadow:0 1px 2px #000c}      /* 字跨在填色與底色的交界上，加陰影才兩邊都讀得清楚 */
   .d.w{background:#173a26;color:#8ee0aa}
   .d.x{background:#3a2a12;color:var(--odd)}
+  .d.e{background:#3a1416;color:#fca5a5;font-weight:700}
   .d.td{box-shadow:inset 0 0 0 2px #fff}
   .d small{font-size:.5rem;opacity:.9;max-width:100%;overflow:hidden;white-space:nowrap}
   .sum{font-size:.74rem;color:var(--dim);margin-top:6px;line-height:1.6}
@@ -222,7 +227,8 @@ function render() {
       <span class="k" style="background:var(--halfbg)"></span>半天假（只填一半）
       <span class="k" style="background:var(--accent)"></span>出勤
       <span class="k" style="background:var(--odd)"></span>打卡未完整
-      <span class="k" style="background:var(--we)"></span>週末/無紀錄<br>
+      <span class="k" style="background:var(--we)"></span>週末/無紀錄
+      <span class="k" style="background:var(--evt)"></span>到職等人事異動（不是休假）<br>
       <b>不含實際打卡時刻</b>——要看幾點打的卡請用「部門打卡記錄」那頁
     </div>`;
 

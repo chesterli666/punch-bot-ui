@@ -10,6 +10,7 @@
     --bg:#0b1014; --card:#111a20; --line-soft:#22303a;
     --fg:#e8f2ec; --dim:#7d9a8b; --accent:#22c55e; --warn:#f59e0b; --title:#f97316;
     --off:#38bdf8; --bad:#f87171; --head:#16232b; --we:#1a1420;
+    --evt:#ef4444;    /* 到職等人事異動：沿用公司系統的紅色，且刻意不用休假的藍系 */
   }
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--fg);
@@ -54,6 +55,8 @@
   .t.bad{color:var(--bad);font-weight:700}
   td.st{white-space:nowrap;font-size:.74rem}
   .lv{color:var(--off)}
+  .ev{color:var(--evt)}
+  tr.evt{background:#22141a}
   .dimtxt{color:var(--dim)}
 
   .legend{padding:10px;color:var(--dim);font-size:.72rem;line-height:1.9;text-align:center}
@@ -85,7 +88,8 @@ async function readPayload() {
 }
 
 const WD = ['日', '一', '二', '三', '四', '五', '六'];
-const ST = { o: '🌴', w: '✅', x: '⚠️ 未完整', n: '❔ 尚未打卡', '-': '❔ 無紀錄', p: '🕒 上班中' };
+const ST = { o: '🌴', w: '✅', x: '⚠️ 未完整', n: '❔ 尚未打卡', '-': '❔ 無紀錄', p: '🕒 上班中',
+             e: '📌 人事異動' };
 let P = null, day = 1, Y = 0, M = 0, TODAY = 0;
 
 function esc(s) {
@@ -131,12 +135,16 @@ function times(list) {
 function render() {
   const rows = P.rows.map(r => {
     const [ins, outs, st, lv] = cell(r, day);
-    const cls = st === 'o' ? ' class="off"' : (st === 'x' ? ' class="odd"' : (st === 'p' ? ' class="live"' : ''));
-    const status = st === 'o' ? `<span class="lv">🌴 ${esc(lv || '休假')}</span>` : ST[st];
+    const cls = st === 'o' ? ' class="off"' : (st === 'e' ? ' class="evt"'
+      : (st === 'x' ? ' class="odd"' : (st === 'p' ? ' class="live"' : '')));
+    // 到職等人事異動不是休假：'e' 自成一種狀態；其他狀態下有事件就附在後面（到職當天照樣會打卡）
+    const status = st === 'o' ? `<span class="lv">🌴 ${esc(lv || '休假')}</span>`
+      : st === 'e' ? `<span class="ev">📌 ${esc(lv || '人事異動')}</span>`
+      : ST[st] + (lv ? ` <span class="ev">📌 ${esc(lv)}</span>` : '');
     return `<tr${cls}>
       <th class="nm">${esc(r.n)}<small>${esc(r.t)}</small></th>
-      <td>${st === 'o' ? '<span class="dimtxt">—</span>' : times(ins)}</td>
-      <td>${st === 'o' ? '<span class="dimtxt">—</span>' : times(outs)}</td>
+      <td>${st === 'o' || st === 'e' ? '<span class="dimtxt">—</span>' : times(ins)}</td>
+      <td>${st === 'o' || st === 'e' ? '<span class="dimtxt">—</span>' : times(outs)}</td>
       <td class="st">${status}</td>
     </tr>`;
   }).join('');
@@ -170,6 +178,7 @@ function render() {
       <span>出勤 <b>${n('w') + n('x') + n('p')}</b></span>
       <span>休假 <b>${n('o')}</b></span>
       <span>尚未打卡 <b>${n('n') + n('-')}</b></span>
+      ${n('e') ? `<span style="color:var(--evt)">人事異動 <b style="color:var(--evt)">${n('e')}</b></span>` : ''}
       ${n('p') ? `<span>上班中 <b>${n('p')}</b></span>` : ''}
       ${n('x') ? `<span style="color:var(--warn)">未完整 <b style="color:var(--warn)">${n('x')}</b></span>` : ''}
       ${late ? `<span style="color:var(--bad)">遲到 <b style="color:var(--bad)">${late}</b></span>` : ''}
@@ -185,7 +194,8 @@ function render() {
     <div class="legend">
       <b>紅字</b>＝比排定班別時間晚到／早走　·　⚠️ 未完整＝系統標記打卡異常<br>
       🕒 上班中＝今天打了上班卡、還沒打下班卡<br>
-      🌴＝休假　·　—＝尚未打下班卡　·　左右箭頭或下方日期條可換日
+      🌴＝休假　·　<span class="ev">📌＝到職等人事異動（不是休假）</span><br>
+      —＝尚未打下班卡　·　左右箭頭或下方日期條可換日
     </div>`;
 
   document.getElementById('dp').addEventListener('click', () => { if (day > 1) { day--; render(); } });

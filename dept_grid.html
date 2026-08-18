@@ -67,6 +67,8 @@
   .cc .cn{position:absolute;top:1px;right:3px;font-size:.72rem;font-weight:700;color:var(--warn)}
   .cc .nm3{display:block;margin-top:14px;font-size:.54rem;line-height:1.35;color:var(--fg);
            text-align:center;word-break:break-all}
+  .cc .ev3{display:block;font-size:.52rem;line-height:1.3;color:#ef4444;
+           text-align:center;word-break:break-all}   /* 到職等人事異動：紅字，跟休假名單分開 */
   .cc .hn{font-size:.5rem}
 
   /* 逐日檢視：一列一天 */
@@ -153,12 +155,16 @@ function abbrevMap(people) {
   return map;
 }
 
-/* 某天休假的人（回傳 [{r, marks}]） */
-function offOn(d) {
+/* 標記型別：1＝整天假(圓標) 0＝半天假 2＝異動班別 3＝到職等人事異動（不是休假） */
+const EVENT_SHAPE = 3;
+const isEvent = m => m[2] === EVENT_SHAPE;
+
+/* 某天有標記的人（回傳 [{r, marks}]）。keep 可只挑某類標記，例如只要休假、或只要人事異動 */
+function offOn(d, keep) {
   const k = String(d), out = [];
   for (const r of D.rows) {
-    const marks = r.c[k];
-    if (marks && marks.length) out.push({ r, marks });
+    const marks = (r.c[k] || []).filter(keep || (() => true));
+    if (marks.length) out.push({ r, marks });
   }
   return out;
 }
@@ -236,9 +242,12 @@ function renderCal() {
     rows += '<tr>' + cells.slice(i, i + 7).map(d => {
       if (d === null) return '<td><div class="cc blank"></div></td>';
       const m = dayMeta(d), n = D.cnt[d - 1] || 0;
-      const who = offOn(d);
+      const who = offOn(d, m => !isEvent(m));      // 名字只列休假的人
       const names = who.slice(0, 3).map(x => shortName(x.r.n)).join('<br>')
         + (who.length > 3 ? `<br>+${who.length - 3}` : '');
+      // 到職等人事異動不是休假：另外用紅字標名字，不混進上面的休假名單
+      const evt = offOn(d, isEvent).map(x =>
+        `📌${shortName(x.r.n)}`).join(' ');
       const c = ['cc'];
       if (m.isWe) c.push('we');
       if (m.isHol) c.push('hol');
@@ -250,6 +259,7 @@ function renderCal() {
         style="${heat ? `background:rgba(245,158,11,${a})` : ''}">
         <span class="dn">${d}</span>${n ? `<span class="cn">${n}</span>` : ''}
         <span class="nm3">${names}</span>
+        ${evt ? `<span class="ev3">${evt}</span>` : ''}
         ${m.holName ? `<span class="hn">${m.holName}</span>` : ''}</div></td>`;
     }).join('') + '</tr>';
   }
@@ -263,7 +273,7 @@ function renderCal() {
       </table>
     </div>
     <div class="legend">
-      數字右上＝當日休假人數；名字＝休假的人（最多列 3 個）<br>
+      數字右上＝當日休假人數；名字＝休假的人（最多列 3 個）；<span style="color:#ef4444">📌＝到職等人事異動（不是休假）</span><br>
       <b>橘底＝平日排休，愈橘人愈多</b>（週末假日本來就全員休假，不上色以免蓋掉平日訊號）<br>
       紫底＝週末、紅底＝假日、藍框＝今天；點某天看完整名單。<br>
       此頁唯讀，只是把本機快取畫出來，不會連公司系統。
@@ -308,7 +318,8 @@ function renderDay() {
     </div>
     <div class="legend">
       一列一天，往下捲就是整個月；「休」欄＝當日休假人數。<br>
-      色點＝休假（綠＝特休、橘＝病假、藍＝其他）或異動班別。點格子看細節、點欄頭看是誰。<br>
+      色點＝休假（綠＝特休、橘＝病假、藍＝其他）或異動班別；紅點＝到職等人事異動（不是休假，不計入「休」欄）。<br>
+      點格子看細節、點欄頭看是誰。<br>
       <div class="who">${people.map(r =>
         `<span><b>${ab[r.n]}</b>${r.n}</span>`).join('')}</div>
     </div>`);
@@ -390,7 +401,8 @@ function renderGrid() {
       </table>
     </div>
     <div class="legend">
-      圓標＝整天休假（綠＝特休、橘＝病假、藍＝其他）；方標＝半天假（標時數）或異動班別<br>
+      圓標＝整天休假（綠＝特休、橘＝病假、藍＝其他）；方標＝半天假（標時數）或異動班別；
+      <span style="color:#ef4444">紅方標＝到職等人事異動（不是休假，不計入當日休假人數）</span><br>
       藍框＝今天；紫底＝週末；紅底＝假日；表頭第二列＝當日休假人數<br>
       點格子看細節。此頁唯讀，只是把本機快取畫出來，不會連公司系統。
     </div>`);
@@ -434,23 +446,28 @@ function popup(r, d) {
 
 /* 欄頭：這個人是誰、這個月休哪幾天 */
 function popPerson(r) {
-  const days = Object.keys(r.c).map(Number).sort((a, b) => a - b);
+  const all = Object.keys(r.c).map(Number).sort((a, b) => a - b);
+  const days = all.filter(d => r.c[String(d)].some(m => !isEvent(m)));
+  const evt = all.filter(d => r.c[String(d)].some(isEvent))
+    .map(d => `${d}日 ${r.c[String(d)].filter(isEvent).map(m => m[0]).join('、')}`);
   const list = days.length
     ? days.map(d => `${d}日`).join('、')
     : '這個月沒有休假紀錄';
   showPop(`<b>${r.n}</b>${r.t ? `　預設班別 ${r.t}` : ''}<br>
-    共 ${days.length} 天：${list}`);
+    共 ${days.length} 天：${list}`
+    + (evt.length ? `<br>人事異動：${evt.join('、')}` : ''));
 }
 
-/* 整天：那天有誰休假 */
+/* 整天：那天有誰休假（到職等人事異動另外列，不併進休假人數） */
 function popDay(d) {
-  const who = offOn(d);
-  const list = who.length
-    ? who.map(({ r, marks }) =>
-        `<div class="pl"><span class="pn">${r.n}</span>${marks.map(([t, c]) =>
-          `<span class="bd" style="background:${c}">${t}</span>`).join(' ')}</div>`).join('')
-    : '<div class="pl">這天沒有人休假</div>';
-  showPop(`<b>${dayTitle(d)}</b>　休假 ${who.length} 人<div class="plist">${list}</div>`);
+  const row = ({ r, marks }) =>
+    `<div class="pl"><span class="pn">${r.n}</span>${marks.map(([t, c]) =>
+      `<span class="bd" style="background:${c}">${t}</span>`).join(' ')}</div>`;
+  const who = offOn(d, m => !isEvent(m));
+  const evt = offOn(d, isEvent);
+  const list = who.length ? who.map(row).join('') : '<div class="pl">這天沒有人休假</div>';
+  showPop(`<b>${dayTitle(d)}</b>　休假 ${who.length} 人<div class="plist">${list}</div>`
+    + (evt.length ? `<b>人事異動</b><div class="plist">${evt.map(row).join('')}</div>` : ''));
 }
 
 document.addEventListener('click', e => {          // 點空白處關掉彈窗
