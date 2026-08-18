@@ -42,7 +42,8 @@
   td{padding:0}
   .day{width:100%;aspect-ratio:1/1;border:0;border-radius:8px;background:#1a242b;
        color:#cfe0d6;font-size:1rem;font-family:inherit;cursor:pointer;
-       display:flex;align-items:center;justify-content:center;transition:transform .08s}
+       display:flex;flex-direction:column;align-items:center;justify-content:center;
+       line-height:1.1;transition:transform .08s}
   .day:active{transform:scale(.9)}
   .day.blank{background:transparent;cursor:default}
   .day.hol{background:#2a2016;color:var(--warn)}          /* 例假/國定假日 */
@@ -50,6 +51,25 @@
   .day.on.hol{background:var(--warn);color:#241a06}
   .day.dirty{box-shadow:inset 0 0 0 2px #fff6}            /* 這次才改動的 */
   .day.past{opacity:.35;cursor:not-allowed}
+  /* 同事休假人數：直接標在日格下緣，愈多愈橘——劃休假時要避開的就是這個 */
+  .day .co{font-size:.52rem;margin-top:1px;color:#8aa79a}
+  .day .co.w1{color:#d9c07a} .day .co.w2{color:#f0a24a} .day .co.w3{color:#f9743b;font-weight:700}
+  .day.on .co,.day.on.hol .co{color:#0a2a16}
+  .cobox{margin-top:12px;border-top:1px dashed var(--line-soft);padding-top:10px}
+  .cohead{display:flex;align-items:center;gap:6px;font-size:.78rem;color:var(--dim);
+          margin-bottom:6px;flex-wrap:wrap}
+  .cochips{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px}
+  .cochip{border:1px solid var(--line-soft);background:transparent;color:var(--dim);
+          border-radius:999px;padding:3px 9px;font-size:.72rem;font-family:inherit;cursor:pointer}
+  .cochip.on{border-color:var(--warn);color:var(--warn)}
+  .colist{max-height:190px;overflow-y:auto;font-size:.74rem;line-height:1.7}
+  .corow{display:flex;gap:6px;padding:2px 0;border-bottom:1px dashed #16222a}
+  .corow:last-child{border-bottom:0}
+  .corow .d{flex:0 0 2.4em;color:var(--warn);text-align:right}
+  .corow .c{flex:0 0 2.6em;color:var(--dim)}
+  .corow .nm{flex:1;color:#cfe0d6;word-break:break-all}
+  .corow .nm em{color:var(--accent);font-style:normal}   /* 自己 */
+  .conone{color:var(--dim);font-size:.76rem}
   .note{margin-top:12px;text-align:center;font-size:.75rem;color:var(--dim);line-height:1.7}
   .note .h{color:var(--warn)}
   .diff{margin-top:10px;font-size:.82rem;line-height:1.8}
@@ -102,6 +122,7 @@ async function readPayload() {
 /* P＝整包（多個月份），S＝目前顯示的那個月的區塊。
    EDIT/CLS 依月份分開存，所以切月份不會弄丟前一個月改到一半的東西。 */
 let P = null, S = null, off = null, EDIT = {}, CLS = {};
+let COG = null;          // 同事休假要看哪個部門（null＝全部門）
 
 async function init() {
   try { P = await readPayload(); } catch (e) { P = null; }
@@ -179,11 +200,72 @@ function allChanges() {
   }).filter(c => c.add.length || c.remove.length || c.class_id);
 }
 
+/* ── 同事休假參考（唯讀，只是拿來避開大家都休的日子）────────────────
+   資料是 bridge 端用 dept_schedule.is_leave 算好的（到職等 0 小時的人事事件不算休假），
+   這裡只負責畫；姓名與部門是索引表，日期指過去。 */
+function coDays() {
+  const co = P.co;
+  if (!co || !co.d[S.month]) return null;
+  const out = {};
+  for (const [d, idxs] of Object.entries(co.d[S.month])) {
+    const keep = COG === null ? idxs : idxs.filter(i => co.n[i][1] === COG);
+    if (keep.length) out[d] = keep;
+  }
+  return out;
+}
+
+function coHeat(n, max) {
+  if (!n) return '';
+  const r = n / (max || 1);
+  return r >= .66 ? 'w3' : r >= .33 ? 'w2' : 'w1';
+}
+
+/* 熱度的刻度基準：**排除「全公司都休」的日子**（週末／國定假日整批 40 人）。
+   不排除的話刻度會被撐到 40，平日 6~14 人的差別全變同一色，這張表就白畫了。
+   60% 這條線與 dept_grid 推算公司休日用的是同一個門檻。 */
+function coScale(days) {
+  if (!days) return 1;
+  const total = (P.co.n || []).length || 1;
+  const normal = Object.values(days).map(v => v.length).filter(n => n < total * 0.6);
+  return Math.max(1, ...(normal.length ? normal : Object.values(days).map(v => v.length)));
+}
+
+function coBox(days, max) {
+  const co = P.co;
+  if (!co) return '';
+  if (!days) return `<div class="cobox"><div class="conone">👥 尚無 ${S.month} 的全部門班表，
+    無法參考同事休假（回 Telegram 跑 /dept_schedule_sync 抓一次）。</div></div>`;
+  const ds = Object.keys(days).map(Number).sort((a, b) => a - b);
+  const chips = [['全部門', null], ...co.g.map((g, i) => [g, i])];
+  return `<div class="cobox">
+    <div class="cohead">👥 同事休假參考（${COG === null ? '全部門' : co.g[COG]}）
+      ${ds.length ? `· 平日最多 ${max} 人（顏色刻度，不含全公司都休的日子）` : ''}</div>
+    <div class="cochips">${chips.map(([label, g]) =>
+      `<button class="cochip${COG === g ? ' on' : ''}" data-g="${g === null ? '' : g}">${label}</button>`
+    ).join('')}</div>
+    <div class="colist">${ds.length ? ds.map(d => {
+      // 名字只列前 6 個，其餘 +N（同逐步版 _se_coworker_text 的截斷作法）。
+      // 自己一定排最前面——想知道的第一件事就是「那天我休了沒」。
+      const me = (co.n[co.me] || [])[0];
+      const sorted = [...days[d]].sort((a, b) =>
+        (co.n[b][0] === me) - (co.n[a][0] === me));
+      const show = sorted.slice(0, 6).map(i => co.n[i][0] === me
+        ? `<em>${co.n[i][0]}</em>` : co.n[i][0]);
+      const more = sorted.length - show.length;
+      return `<div class="corow"><span class="d">${d}日</span>
+        <span class="c">${days[d].length} 人</span>
+        <span class="nm">${show.join('、')}${more ? ` +${more}` : ''}</span></div>`;
+    }).join('') : '<div class="conone">這個部門本月沒有人休假</div>'}</div>
+  </div>`;
+}
+
 function render() {
   const y = +S.month.slice(0, 4), mo = +S.month.slice(5, 7);
   const first = new Date(y, mo - 1, 1).getDay();      // 0=日，與下方表頭一致
   const days = S.days_in_month;
   const b = base();
+  const coday = coDays();
+  const comax = coScale(coday);
 
   let cells = [];
   for (let i = 0; i < first; i++) cells.push(null);
@@ -201,7 +283,9 @@ function render() {
       if ((S.locked_days || []).includes(d)) cl.push('past');
       const label = off.has(d) ? '✓' : d;
       const tip = holName(d);
-      return `<td><div class="${cl.join(' ')}" data-d="${d}" title="${tip}">${label}</div></td>`;
+      const n = (coday && coday[d] || []).length;
+      const badge = n ? `<span class="co ${coHeat(n, comax)}">${n}人</span>` : '';
+      return `<td><div class="${cl.join(' ')}" data-d="${d}" title="${tip}">${label}${badge}</div></td>`;
     }).join('') + '</tr>';
   }
 
@@ -244,6 +328,7 @@ function render() {
         <tbody>${rows}</tbody>
       </table>
       ${clsBox}
+      ${coBox(coday, comax)}
       <div class="diff">
         ${add.length ? `<div class="add">➕ 將新增休假：${fmt(add)}</div>` : ''}
         ${rem.length ? `<div class="rem">➖ 將取消休假：${fmt(rem)}</div>` : ''}
@@ -270,6 +355,8 @@ function render() {
   if (next) next.addEventListener('click', () => shiftMonth(1));
   document.querySelectorAll('.mtab').forEach(el =>
     el.addEventListener('click', () => setMonth(el.dataset.m)));
+  document.querySelectorAll('.cochip').forEach(el =>
+    el.addEventListener('click', () => { COG = el.dataset.g === '' ? null : +el.dataset.g; render(); }));
   const sel = document.getElementById('cls');
   if (sel) sel.addEventListener('change', () => { CLS[S.month] = sel.value || null; render(); });
   document.getElementById('prev').addEventListener('click', () => submit('dry'));
