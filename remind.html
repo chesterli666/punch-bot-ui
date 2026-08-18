@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>提醒中心</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root{
+    --bg:#0b1014; --card:#111a20; --line-soft:#22303a;
+    --fg:#e8f2ec; --dim:#7d9a8b; --accent:#22c55e; --warn:#f59e0b; --title:#f97316;
+    --bad:#ef4444; --info:#38bdf8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+       -webkit-tap-highlight-color:transparent;padding:12px}
+  h1{margin:.2em 0 .1em;font-size:1.4rem;text-align:center;color:var(--title)}
+  .sub{text-align:center;color:var(--dim);font-size:.76rem;margin-bottom:12px}
+  .sec{background:var(--card);border:1px solid var(--line-soft);border-radius:12px;
+       padding:12px;margin-bottom:10px}
+  .lb{font-size:.8rem;color:var(--dim);margin-bottom:8px}
+  .lb b{color:var(--accent)}
+
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{padding:9px 12px;border:1px solid var(--line-soft);background:#16222a;color:var(--fg);
+        border-radius:999px;font-size:.84rem;font-family:inherit;cursor:pointer}
+  .chip.on{background:var(--accent);color:#06210f;border-color:var(--accent);font-weight:700}
+  .chip.sm{padding:7px 10px;font-size:.78rem}
+
+  textarea{width:100%;padding:10px;border-radius:8px;background:#16222a;color:var(--fg);
+    border:1px solid var(--line-soft);font-family:inherit;font-size:.95rem;
+    resize:vertical;min-height:52px}
+  select{background:#16222a;color:var(--fg);border:1px solid var(--line-soft);
+    border-radius:8px;padding:10px 12px;font-family:inherit;font-size:1.05rem}
+  .timerow{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .timerow .colon{font-size:1.1rem;color:var(--dim)}
+  .quick{margin-left:auto;display:flex;gap:6px}
+
+  /* 清單：整列可點＝勾完成，右邊垃圾桶＝刪除。兩種狀態都只是先標記，送出才真的動 */
+  .item{display:flex;align-items:flex-start;gap:9px;padding:9px 0;
+        border-bottom:1px dashed #1c2830}
+  .item:last-child{border-bottom:0}
+  .box{flex:0 0 20px;height:20px;margin-top:2px;border:1px solid var(--line-soft);
+       border-radius:6px;display:flex;align-items:center;justify-content:center;
+       font-size:.8rem;cursor:pointer;background:#16222a}
+  .item.done .box{background:var(--accent);border-color:var(--accent);color:#06210f}
+  .item.del .box{background:var(--bad);border-color:var(--bad);color:#fff}
+  .mid{flex:1;min-width:0;cursor:pointer}
+  .mid .t{font-size:.92rem;word-break:break-word}
+  .mid .d{font-size:.74rem;color:var(--dim);margin-top:2px}
+  .mid .d .rep{color:var(--info)}
+  .mid .d .over{color:var(--bad)}
+  .item.done .mid .t,.item.del .mid .t{text-decoration:line-through;color:var(--dim)}
+  .trash{flex:0 0 auto;border:0;background:transparent;color:#5b6d63;font-size:1rem;
+         padding:2px 4px;cursor:pointer;font-family:inherit}
+  .item.del .trash{color:var(--bad)}
+  .none{color:var(--dim);font-size:.82rem;text-align:center;padding:6px 0}
+
+  .bar{display:flex;gap:8px;margin-top:14px}
+  .submit{flex:1;padding:15px 8px;border:0;border-radius:12px;
+          background:var(--accent);color:#06210f;font-size:1rem;font-weight:700;
+          font-family:inherit;cursor:pointer;box-shadow:0 6px 20px #0008}
+  .submit[disabled]{background:#2b3a33;color:#6b7f74;box-shadow:none}
+  .tip{text-align:center;font-size:.72rem;color:var(--dim);margin-top:8px;line-height:1.7}
+  .err{padding:28px;text-align:center;color:var(--warn);line-height:2}
+</style>
+</head>
+<body>
+<div id="app"><div class="sub">載入中…</div></div>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+function b64bytes(s) {
+  const b = atob(s.replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(b, c => c.charCodeAt(0));
+}
+async function readPayload() {
+  const z = location.hash.match(/[#&]z=([^&]+)/);
+  if (z) {
+    if (!window.DecompressionStream) throw new Error('NO_DS');
+    const ds = new DecompressionStream('deflate');
+    const buf = await new Response(new Blob([b64bytes(z[1])]).stream().pipeThrough(ds)).arrayBuffer();
+    return JSON.parse(new TextDecoder().decode(buf));
+  }
+  const d = location.hash.match(/[#&]d=([^&]+)/);
+  return d ? JSON.parse(new TextDecoder().decode(b64bytes(d[1]))) : null;
+}
+
+const WD = ['週一', '週二', '週三', '週四', '週五', '週六', '週日'];
+let P = null;
+let repeat = 'once', date = '', weekday = 0, monthday = 1, hh = '09', mm = '00', text = '';
+let mark = {};        // id → 'done' | 'del'（送出前只是標記）
+
+async function init() {
+  let err = null;
+  try { P = await readPayload(); } catch (e) { err = e.message; }
+  if (!P) {
+    document.getElementById('app').innerHTML = err === 'NO_DS'
+      ? '<div class="err">Telegram 內建瀏覽器太舊，無法解壓縮資料。<br>請更新後再試，或用 /remind 的逐步版。</div>'
+      : '<div class="err">缺少資料。<br>請回 Telegram 用 /remind_web 重新開啟。</div>';
+    return;
+  }
+  date = P.today;
+  const t = new Date(P.today + 'T' + P.now);
+  weekday = (t.getDay() + 6) % 7;                 // JS 週日=0 → 這裡週一=0，與 Python 一致
+  monthday = +P.today.slice(8, 10);
+  render();
+}
+
+const hasChange = () => Object.keys(mark).length > 0 || text.trim() !== '';
+
+function fmtDue(iso) {
+  const [d, t] = iso.split('T');
+  const days = (new Date(d + 'T00:00') - new Date(P.today + 'T00:00')) / 86400000;
+  const rel = days === 0 ? '今天' : days === 1 ? '明天' : days < 0 ? '已過期' : `${days} 天後`;
+  return { txt: `${d.slice(5)} ${t}`, rel, over: days < 0 };
+}
+
+/* 一次性要選日期（最多往後 60 天，用下拉——月曆在這裡是殺雞用牛刀，
+   提醒多半是最近幾天的事）；每週選星期幾；每月選幾號。 */
+function whenHtml() {
+  if (repeat === 'once') {
+    const opts = [];
+    for (let i = 0; i < 61; i++) {
+      const d = new Date(P.today + 'T00:00');
+      d.setDate(d.getDate() + i);
+      const ds = d.toISOString().slice(0, 10);
+      const label = i === 0 ? `${ds}（今天）` : i === 1 ? `${ds}（明天）`
+        : `${ds}（${WD[(d.getDay() + 6) % 7]}）`;
+      opts.push(`<option value="${ds}"${ds === date ? ' selected' : ''}>${label}</option>`);
+    }
+    return `<div class="lb">日期</div><select id="dt" style="width:100%">${opts.join('')}</select>`;
+  }
+  if (repeat === 'weekly') {
+    return `<div class="lb">星期幾</div><div class="chips">${WD.map((w, i) =>
+      `<button class="chip sm${i === weekday ? ' on' : ''}" data-wd="${i}">${w}</button>`).join('')}</div>`;
+  }
+  if (repeat === 'monthly') {
+    return `<div class="lb">每月幾號 <b>${monthday}</b> 號
+      <span style="color:var(--dim)">（該月沒有這天就順延到下個有的月份）</span></div>
+      <div class="chips">${Array.from({ length: 31 }, (_, i) => i + 1).map(d =>
+        `<button class="chip sm${d === monthday ? ' on' : ''}" data-md="${d}">${d}</button>`).join('')}</div>`;
+  }
+  return `<div class="lb">${repeat === 'workday'
+    ? '每個工作日的這個時間（週六日順延到平日）' : '每天的這個時間'}</div>`;
+}
+
+function listHtml() {
+  if (!P.items.length) return '<div class="none">目前沒有未完成的提醒</div>';
+  return P.items.map(it => {
+    const f = fmtDue(it.d);
+    const st = mark[it.i] || '';
+    const rep = it.r === 'once' ? '' :
+      `<span class="rep"> · ${(P.repeats.find(r => r[0] === it.r) || [, it.r])[1]}</span>`;
+    return `<div class="item ${st}">
+      <div class="box" data-done="${it.i}">${st === 'done' ? '✓' : st === 'del' ? '✕' : ''}</div>
+      <div class="mid" data-done="${it.i}">
+        <div class="t">${it.t}</div>
+        <div class="d">${f.txt} <span class="${f.over ? 'over' : ''}">（${f.rel}）</span>${rep}</div>
+      </div>
+      <button class="trash" data-del="${it.i}">🗑</button>
+    </div>`;
+  }).join('');
+}
+
+function render() {
+  const opt = (n, v) => `<option value="${n}"${n === v ? ' selected' : ''}>${n}</option>`;
+  const hs = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
+  const ms = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0'));
+  const nDone = Object.values(mark).filter(v => v === 'done').length;
+  const nDel = Object.values(mark).filter(v => v === 'del').length;
+  const parts = [];
+  if (text.trim()) parts.push('新增 1');
+  if (nDone) parts.push(`完成 ${nDone}`);
+  if (nDel) parts.push(`刪除 ${nDel}`);
+
+  document.getElementById('app').innerHTML = `
+    <h1>提醒中心</h1>
+    <div class="sub">${P.user || ''}　·　勾選＝完成，🗑＝刪除，送出才會真的動</div>
+
+    <div class="sec">
+      <div class="lb">未完成提醒（${P.items.length}）</div>
+      ${listHtml()}
+    </div>
+
+    <div class="sec">
+      <div class="lb">➕ 新增提醒</div>
+      <div class="chips">${P.repeats.map(([k, v]) =>
+        `<button class="chip${k === repeat ? ' on' : ''}" data-r="${k}">${v}</button>`).join('')}</div>
+      <div style="margin-top:10px">${whenHtml()}</div>
+      <div style="margin-top:10px">
+        <div class="lb">時間</div>
+        <div class="timerow">
+          <select id="hh">${hs.map(n => opt(n, hh)).join('')}</select>
+          <span class="colon">:</span>
+          <select id="mm">${ms.map(n => opt(n, mm)).join('')}</select>
+          <span class="quick">
+            <button class="chip sm" data-t="09:00">09:00</button>
+            <button class="chip sm" data-t="13:30">13:30</button>
+            <button class="chip sm" data-t="18:00">18:00</button>
+          </span>
+        </div>
+      </div>
+      <div style="margin-top:10px">
+        <div class="lb">內容</div>
+        <textarea id="tx" placeholder="例如：繳信用卡費（留空就只處理上面的勾選）">${text}</textarea>
+      </div>
+    </div>
+
+    <div class="bar">
+      <button class="submit" id="go"${hasChange() ? '' : ' disabled'}>
+        ✅ 送出${parts.length ? `（${parts.join('、')}）` : ''}</button>
+    </div>
+    <div class="tip">送出後 Telegram 會再出一張預覽卡，按確定才真的寫入。<br>
+      提醒只存在這台機器的 reminders.json，不會送到公司系統。</div>`;
+
+  document.querySelectorAll('[data-done]').forEach(el =>
+    el.addEventListener('click', () => {
+      const id = el.dataset.done;
+      mark[id] = mark[id] === 'done' ? undefined : 'done';
+      if (!mark[id]) delete mark[id];
+      render();
+    }));
+  document.querySelectorAll('[data-del]').forEach(el =>
+    el.addEventListener('click', () => {
+      const id = el.dataset.del;
+      mark[id] = mark[id] === 'del' ? undefined : 'del';
+      if (!mark[id]) delete mark[id];
+      render();
+    }));
+  document.querySelectorAll('.chip[data-r]').forEach(el =>
+    el.addEventListener('click', () => { repeat = el.dataset.r; render(); }));
+  document.querySelectorAll('.chip[data-wd]').forEach(el =>
+    el.addEventListener('click', () => { weekday = +el.dataset.wd; render(); }));
+  document.querySelectorAll('.chip[data-md]').forEach(el =>
+    el.addEventListener('click', () => { monthday = +el.dataset.md; render(); }));
+  document.querySelectorAll('.chip[data-t]').forEach(el =>
+    el.addEventListener('click', () => { [hh, mm] = el.dataset.t.split(':'); render(); }));
+  const dt = document.getElementById('dt');
+  if (dt) dt.addEventListener('change', e => { date = e.target.value; });
+  const h = document.getElementById('hh'), m = document.getElementById('mm');
+  if (h) h.addEventListener('change', e => { hh = e.target.value; });
+  if (m) m.addEventListener('change', e => { mm = e.target.value; });
+  const tx = document.getElementById('tx');
+  // 打第一個字與清空時要重畫（送出鈕的狀態會變），中間不重畫，免得游標跳掉
+  tx.addEventListener('input', e => {
+    const was = text.trim() !== '';
+    text = e.target.value;
+    if (was !== (text.trim() !== '')) { render(); document.getElementById('tx').focus(); }
+  });
+  document.getElementById('go').addEventListener('click', submit);
+}
+
+function submit() {
+  const payload = {
+    kind: 'remind', nonce: P.nonce || '', mode: 'send',
+    done: Object.keys(mark).filter(k => mark[k] === 'done'),
+    del: Object.keys(mark).filter(k => mark[k] === 'del'),
+    add: text.trim() ? { repeat, hh: +hh, mm: +mm, text: text.trim(),
+                         date, weekday, monthday } : null,
+  };
+  if (!tg || !tg.sendData) { alert(JSON.stringify(payload, null, 2)); return; }
+  tg.sendData(JSON.stringify(payload));
+}
+
+init();
+</script>
+</body>
+</html>
