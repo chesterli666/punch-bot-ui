@@ -91,6 +91,8 @@
   .plist{margin-top:8px;max-height:38vh;overflow:auto}
   .pl{padding:3px 0;border-top:1px solid var(--line-soft)}
   .pn{display:inline-block;min-width:7.5em;color:var(--fg)}
+  /* 班別檢視填進空格的預設班別：灰字、不搶休假標記的顏色 */
+  .dc{color:#5c7568;font-size:.62rem}
   .err{padding:28px;text-align:center;color:var(--warn);line-height:2}
   .pop{position:fixed;left:10px;right:10px;bottom:10px;background:var(--card);
        border:1px solid var(--line);border-radius:12px;padding:12px 14px;font-size:.82rem;
@@ -134,6 +136,10 @@ const WD = ['日', '一', '二', '三', '四', '五', '六'];
    day ＝逐日（往下捲，回答「這天誰在」「某人怎麼排」）
    grid＝原本的橫向網格（詳細模式，桌機／橫置手機最完整） */
 let D = null, onlyOff = false, q = '', view = 'cal';
+/* 顯示每個人的預設班別（原本網格只標「跟預設不同」的班別，一般上班日留白，
+   所以看不出誰上什麼班——那正是逐步版 /dept_class 在回答的事）。 */
+let showClass = false;
+const clsOf = r => (D.cs || [])[r.d] || '';
 
 /* 「rex.liao」→「rex」：格子窄，只放得下名不放姓 */
 const shortName = n => (n || '').split('.')[0];
@@ -338,6 +344,7 @@ function tools() {
   return `<div class="tools">
       <input type="search" id="q" placeholder="搜尋姓名…" value="${q}">
       <button class="btn${onlyOff ? ' on' : ''}" id="of">只看有假</button>
+      <button class="btn${showClass ? ' on' : ''}" id="cl">📋 班別</button>
     </div>`;
 }
 
@@ -353,6 +360,8 @@ function bindTools() {
   });
   const of = document.getElementById('of');
   if (of) of.addEventListener('click', () => { onlyOff = !onlyOff; render(); });
+  const cl = document.getElementById('cl');
+  if (cl) cl.addEventListener('click', () => { showClass = !showClass; render(); });
 }
 
 /* ── 原本的橫向網格（詳細模式）─────────────────────────────── */
@@ -382,12 +391,20 @@ function renderGrid() {
 
   const body = rows.map((r, ri) => {
     const cells = days.map(d => {
-      const marks = (r.c[String(d)] || []).map(([txt, color, shape]) =>
+      const raw = r.c[String(d)] || [];
+      let marks = raw.map(([txt, color, shape]) =>
         `<span class="bd${shape === 1 && txt.length <= 2 ? ' rd' : ''}" style="background:${color}">${txt}</span>`
       ).join('');
+      // 班別檢視：沒有任何標記的上班日補上預設班別（休假日不補——那天根本沒上班）
+      if (showClass && !raw.length && clsOf(r)) {
+        const m = dayMeta(d);
+        if (!m.isWe && !m.isHol) marks = `<span class="dc">${clsOf(r)}</span>`;
+      }
       return `<td class="${cls(d)}" data-r="${ri}" data-d="${d}">${marks}</td>`;
     }).join('');
-    return `<tr><th class="nm">${r.n}${r.t ? `<small>${r.t}</small>` : ''}</th>${cells}</tr>`;
+    const nm = showClass && clsOf(r) ? `${r.n}<small>${clsOf(r)} ${r.t || ''}</small>`
+                                     : `${r.n}${r.t ? `<small>${r.t}</small>` : ''}`;
+    return `<tr><th class="nm">${nm}</th>${cells}</tr>`;
   }).join('');
 
   document.getElementById('app').innerHTML = shell(tools(), `
@@ -466,8 +483,19 @@ function popDay(d) {
   const who = offOn(d, m => !isEvent(m));
   const evt = offOn(d, isEvent);
   const list = who.length ? who.map(row).join('') : '<div class="pl">這天沒有人休假</div>';
+  // 那天沒休假的人照預設班別上班。逐步版 /dept_class 問的就是這個（某天每人上什麼班），
+  // 原本這個彈窗只列休假的，等於只回答了一半。
+  const m = dayMeta(d);
+  const off = new Set(who.concat(evt).map(x => x.r.n));
+  const work = (m.isWe || m.isHol) ? [] : D.rows.filter(r => !off.has(r.n) && clsOf(r));
+  const byClass = {};
+  for (const r of work) (byClass[clsOf(r)] = byClass[clsOf(r)] || []).push(r.n);
+  const workList = Object.keys(byClass).sort().map(c =>
+    `<div class="pl"><span class="bd" style="background:#43a047">${c}</span>${byClass[c].join('、')}</div>`
+  ).join('');
   showPop(`<b>${dayTitle(d)}</b>　休假 ${who.length} 人<div class="plist">${list}</div>`
-    + (evt.length ? `<b>人事異動</b><div class="plist">${evt.map(row).join('')}</div>` : ''));
+    + (evt.length ? `<b>人事異動</b><div class="plist">${evt.map(row).join('')}</div>` : '')
+    + (work.length ? `<b>上班 ${work.length} 人（預設班別）</b><div class="plist">${workList}</div>` : ''));
 }
 
 document.addEventListener('click', e => {          // 點空白處關掉彈窗
