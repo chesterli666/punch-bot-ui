@@ -75,8 +75,15 @@ async function readPayload() {
 }
 
 // 列的欄位順序跟 webapp_bridge.build_changes_payload 一致
-const AT = 0, KI = 1, GI = 2, NI = 3, DT = 4;
-let P = null, tab = 'all', group = '', kind = -1, q = '';
+const AT = 0, KI = 1, GI = 2, NI = 3, DT = 4, MO = 5;
+let P = null, tab = 'all', group = '', kind = -1, q = '', month = '';
+
+/* 目前選的月份那幾列。**所有統計與篩選都只看這個**（頁籤筆數、chip 筆數、清單），
+   payload 帶了好幾個月，直接用 P.r 會把別的月份也算進去。 */
+function rowsOfMonth() {
+  const i = P.ms.indexOf(month);
+  return P.r.filter(r => r[MO] === i);
+}
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"]/g, c =>
@@ -128,15 +135,27 @@ function listHtml(hits) {
 }
 
 function renderList() {
-  const hits = P.r.filter(match).reverse();      // payload 是舊→新，這裡翻成新的在上
+  const hits = rowsOfMonth().filter(match).reverse();   // payload 是舊→新，這裡翻成新的在上
   document.getElementById('list').innerHTML = listHtml(hits);
   document.getElementById('cnt').textContent = `${hits.length} 筆`;
 }
 
+/* 月份切換。只帶得下一個月時不畫（省版面），下方另外說明能翻的範圍。
+   後端 build_changes_url 會「帶得下幾個月就帶幾個月」，所以這裡照 P.ms 有什麼就畫什麼。 */
+function monthChips() {
+  if (!P.ms || P.ms.length < 2) return '';
+  const cnt = {};
+  for (const r of P.r) cnt[P.ms[r[MO]]] = (cnt[P.ms[r[MO]]] || 0) + 1;
+  return `<div class="chips" id="mchips">` + P.ms.slice().reverse().map(m =>
+    `<button class="chip${m === month ? ' on' : ''}" data-m="${m}">${m} (${cnt[m] || 0})</button>`
+  ).join('') + `</div>`;
+}
+
 function render() {
   const kinds = tabKinds();
+  const mrows = rowsOfMonth();
   // chip 只列**目前頁籤下真的有紀錄**的類型/部門，並各標筆數（點不到空結果）
-  const inTab = P.r.filter(r => kinds.includes(r[KI]));
+  const inTab = mrows.filter(r => kinds.includes(r[KI]));
   const kindCnt = {}, groupCnt = {};
   for (const r of inTab) {
     kindCnt[r[KI]] = (kindCnt[r[KI]] || 0) + 1;
@@ -152,12 +171,13 @@ function render() {
     .map(g => `<button class="chip${group === g ? ' on' : ''}" data-g="${esc(g)}">${esc(g)} (${groupCnt[g]})</button>`).join('');
 
   document.getElementById('app').innerHTML = `
-    <h1>${esc(P.m)} 變動紀錄</h1>
-    <div class="sub">監看器每 15 分鐘偵測　·　本月共 ${P.r.length} 筆　·　<span id="cnt"></span></div>
+    <h1>${esc(month)} 變動紀錄</h1>
+    <div class="sub">監看器每 15 分鐘偵測　·　本月共 ${mrows.length} 筆　·　<span id="cnt"></span></div>
+    ${monthChips()}
     <div class="seg">
-      <button data-t="all"${tab === 'all' ? ' class="on"' : ''}>全部 (${P.r.length})</button>
-      <button data-t="sched"${tab === 'sched' ? ' class="on"' : ''}>📋 班表 (${P.r.filter(r => P.sk.includes(r[KI])).length})</button>
-      <button data-t="punch"${tab === 'punch' ? ' class="on"' : ''}>🕐 打卡 (${P.r.filter(r => P.pk.includes(r[KI])).length})</button>
+      <button data-t="all"${tab === 'all' ? ' class="on"' : ''}>全部 (${mrows.length})</button>
+      <button data-t="sched"${tab === 'sched' ? ' class="on"' : ''}>📋 班表 (${mrows.filter(r => P.sk.includes(r[KI])).length})</button>
+      <button data-t="punch"${tab === 'punch' ? ' class="on"' : ''}>🕐 打卡 (${mrows.filter(r => P.pk.includes(r[KI])).length})</button>
     </div>
     <div class="tools">
       <input type="search" id="q" placeholder="搜尋姓名、部門或內容…" value="${esc(q)}">
@@ -179,6 +199,12 @@ function render() {
 }
 
 function bind() {
+  document.querySelectorAll('#mchips .chip').forEach(el =>
+    el.addEventListener('click', () => {
+      month = el.dataset.m;
+      kind = -1; group = '';        // 換月後原本選的類型/部門在新月份不一定存在
+      render();
+    }));
   document.querySelectorAll('.seg button').forEach(el =>
     el.addEventListener('click', () => { tab = el.dataset.t; render(); }));
   document.querySelectorAll('#kchips .chip').forEach(el =>
@@ -199,6 +225,7 @@ async function init() {
       : '<div class="err">缺少資料。<br>請回 Telegram 用 /changes_web 重新開啟。</div>';
     return;
   }
+  month = P.m || (P.ms || [])[0];      // 預設停在最新的一個月
   render();
 }
 init();
