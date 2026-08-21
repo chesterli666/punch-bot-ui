@@ -76,6 +76,22 @@
 const tg = window.Telegram && window.Telegram.WebApp;
 if (tg) { tg.ready(); tg.expand(); }
 
+/* 縮小視窗＝直接關掉這個 Mini App。
+   踩過（使用者實機回報）：Telegram 同一個 bot 只留一個 Mini App 視窗，往下滑「縮小」
+   不等於關閉；下次點別的功能鈕，它會沿用這個舊視窗、根本不載新網址（?v= 破快取沒用），
+   於是「開部門總表卻跳出打卡記錄」。唯讀頁沒有任何未存資料，關掉再點一下就好，
+   所以乾脆縮小就自我了斷，讓下一次一定是全新載入。寫入型的表單頁不套這段（會弄丟填到一半的內容）。
+   延遲 1 秒是為了避開「叫出鍵盤／截圖」這種瞬間的 hidden。 */
+let _hideTimer = null;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    _hideTimer = setTimeout(() => { if (document.hidden && tg && tg.close) tg.close(); }, 1000);
+  } else if (_hideTimer) {
+    clearTimeout(_hideTimer); _hideTimer = null;
+  }
+});
+
+
 function b64bytes(s) {
   const b = atob(s.replace(/-/g, '+').replace(/_/g, '/'));
   return Uint8Array.from(b, c => c.charCodeAt(0));
