@@ -66,6 +66,7 @@
   .dbar i.zero{background:#25333d}
   td.dnum{width:64px;text-align:right;font-size:.78rem;color:var(--accent);white-space:nowrap}
   td.dnum small{color:var(--dim);font-size:.62rem;margin-left:3px}
+  .na{color:var(--dim);font-weight:400}
   /* 網格檢視右側統計欄：跟姓名欄一樣釘住，不然要橫捲過 30 天才看得到數字 */
   th.st,td.st{position:sticky;right:0;z-index:3;background:#132a1e;color:var(--accent);
               min-width:36px;font-size:.7rem;text-align:center;font-weight:600;
@@ -409,12 +410,13 @@ function bindTools() {
 }
 
 /* ── 假日值班統計 ─────────────────────────────────────────────
-   r.w＝該人在假日（六日／國定假日）有出勤紀錄的日數，由後端挑好帶進來；
+   r.w＝該人排定要值班的假日日數（班表上那天沒排例假＝要值班），後端挑好帶進來；
    分週末／國定假日兩桶是網頁自己依日期算的，所以搜尋篩選後統計會即時跟著變。
-   出勤紀錄只到今天為止（公司系統就只給到今天），未來的日子一律算 0。 */
+   r.w 是 null＝這個人本月班表還沒劃，不能給 0（會被誤讀成「都沒值班」）。*/
 function dutyOf(r) {
+  if (!r.w) return { none: true, we: [], hol: [], total: 0 };
   const we = [], hol = [];
-  for (const d of (r.w || [])) (dayMeta(d).isHol ? hol : we).push(d);
+  for (const d of r.w) (dayMeta(d).isHol ? hol : we).push(d);
   return { we, hol, total: we.length + hol.length };
 }
 
@@ -422,27 +424,35 @@ function renderDuty() {
   const rows = D.rows
     .filter(r => !q || r.n.toLowerCase().includes(q))
     .map(r => ({ r, ...dutyOf(r) }))
-    .sort((a, b) => b.total - a.total || a.r.n.localeCompare(b.r.n));
+    // 班表沒劃的人排最後：他們是「不知道」，不是「0 天」，混在 0 天那群裡會被誤讀
+    .sort((a, b) => (a.none ? 1 : 0) - (b.none ? 1 : 0)
+                    || b.total - a.total || a.r.n.localeCompare(b.r.n));
 
-  const max = Math.max(1, ...rows.map(x => x.total));
-  const sum = rows.reduce((n, x) => n + x.total, 0);
+  const known = rows.filter(x => !x.none);
+  const max = Math.max(1, ...known.map(x => x.total));
+  const sum = known.reduce((n, x) => n + x.total, 0);
+  const nNone = rows.length - known.length;
   const body = rows.map((x, i) => `
     <tr>
       <td class="dn" data-pop data-i="${i}">${x.r.n}</td>
-      <td class="dbar"><i class="${x.total ? '' : 'zero'}"
-          style="width:${x.total ? Math.round(x.total / max * 100) : 0}%"></i></td>
-      <td class="dnum">${x.total}<small>天</small>${
-        x.hol.length ? `<small style="color:#fca5a5">假${x.hol.length}</small>` : ''}</td>
+      <td class="dbar">${x.none ? '' : `<i class="${x.total ? '' : 'zero'}"
+          style="width:${x.total ? Math.round(x.total / max * 100) : 0}%"></i>`}</td>
+      <td class="dnum">${x.none ? '<small class="na">未排班</small>'
+        : `${x.total}<small>天</small>${
+        x.hol.length ? `<small style="color:#fca5a5">假${x.hol.length}</small>` : ''}`}</td>
     </tr>`).join('');
 
   document.getElementById('app').innerHTML = shell(tools(true), `
     <div class="dutywrap">
       <div class="dutysum">當月假日（六、日、國定假日）值班天數　·　
-        全組共 <b>${sum}</b> 天　·　最多 <b>${max}</b> 天</div>
+        ${known.length ? `${known.length} 人共 <b>${sum}</b> 天　·　最多 <b>${max}</b> 天`
+                       : '本月班表還沒劃'}${
+        nNone && known.length ? `　·　另 ${nNone} 人未排班` : ''}</div>
       <table class="duty"><tbody>${body}</tbody></table>
       <div class="legend">
-        依實際出勤紀錄計算：那天是六日或國定假日、而且有打卡才算值班一天。<br>
-        公司系統的出勤紀錄只給到今天為止，所以本月未過的日子還不會被算進去。<br>
+        依班表計算：假日（六日／國定假日）那天<b>沒有排例假</b>就是要值班，跟有沒有打卡無關，
+        所以未來排好的班也算得到。<br>
+        「未排班」＝這個人本月的班表還沒劃（整月一張例假都沒有），不是 0 天。<br>
         右邊數字＝總天數，紅字「假N」＝其中有 N 天是國定假日／公司休日。點名字看是哪幾天。
       </div>
     </div>`);
@@ -451,8 +461,11 @@ function renderDuty() {
   document.querySelectorAll('td.dn[data-i]').forEach(el =>
     el.addEventListener('click', () => {
       const x = rows[+el.dataset.i];
-      showPop(!x.total
-        ? `<h3>${x.r.n}</h3><div class="pl">本月假日沒有值班紀錄。</div>`
+      showPop(x.none
+        ? `<h3>${x.r.n}</h3><div class="pl">本月的班表還沒劃（整月一張例假都沒有），
+             所以算不出假日要值幾天班。</div>`
+        : !x.total
+        ? `<h3>${x.r.n}</h3><div class="pl">本月假日全部排休，沒有值班。</div>`
         : `<h3>${x.r.n}　假日值班 ${x.total} 天</h3>` +
           [['週末', x.we], ['國定假日／公司休日', x.hol]]
             .filter(([, ds]) => ds.length)
@@ -505,7 +518,8 @@ function renderGrid() {
     const nm = showClass && clsOf(r) ? `${r.n}<small>${clsOf(r)} ${r.t || ''}</small>`
                                      : `${r.n}${r.t ? `<small>${r.t}</small>` : ''}`;
     const du = dutyOf(r);
-    return `<tr><th class="nm">${nm}</th>${cells}<td class="st">${du.total || ''}</td></tr>`;
+    return `<tr><th class="nm">${nm}</th>${cells}<td class="st">${
+      du.none ? '<span class="na">–</span>' : (du.total || '')}</td></tr>`;
   }).join('');
 
   document.getElementById('app').innerHTML = shell(tools(), `
@@ -522,7 +536,7 @@ function renderGrid() {
       圓標＝整天休假（綠＝特休、橘＝病假、藍＝其他）；方標＝半天假（標時數）或異動班別；
       <span style="color:#ef4444">紅方標＝到職等人事異動</span>、<span style="color:#06b6d4">🏠 青方標＝居家上班（在家上班、照樣打卡）</span>（兩者都不計入當日休假人數）<br>
       藍框＝今天；紫底＝週末；紅底＝假日；表頭第二列＝當日休假人數；
-      最右欄＝當月假日（六日／國定假日）實際值班天數（依出勤紀錄，只算到今天，明細看「🏅 值班」）<br>
+      最右欄＝當月假日（六日／國定假日）值班天數（班表上沒排例假＝要值班，「–」＝班表還沒劃，明細看「🏅 值班」）<br>
       點格子看細節。此頁唯讀，只是把本機快取畫出來，不會連公司系統。
     </div>`);
 
