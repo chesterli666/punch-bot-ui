@@ -143,9 +143,11 @@ function dayTag(d, ds, c) {
   if (c.i && c.i.length) {
     const cls = isLate(c.i) || isLate(c.o) ? 'bad' : '';
     const out = times(c.o) || '';
-    return `<small class="t ${cls}">${times(c.i)}</small>` +
+    return (c.hm ? '<small>🏠</small>' : '') +
+           `<small class="t ${cls}">${times(c.i)}</small>` +
            (out && out !== '—' ? `<small class="t ${cls}">${out}</small>` : '');
   }
+  if (c.hm) return '<small>🏠</small>';  // 居家但還沒打卡：至少看得出那天要在家上班
   if (c.k === 'n') return '<span class="dot wait"></span>';
   if (c.k === 'e') return '<small>📌</small>';
   return '';
@@ -192,6 +194,7 @@ function calendarHtml() {
       <span><i style="background:#2a2016"></i>例假/國定假日</span>
       <span><i style="background:var(--bad)"></i>紅字＝遲到或早退</span>
       <span>📌 人事異動（不是休假）</span>
+      <span>🏠 居家上班（算上班，照樣打卡）</span>
     </div>`;
 }
 
@@ -205,6 +208,9 @@ function detailHtml() {
 
   if (c.k === 'o' || c.k === 'h') {
     rows.push(['狀態', `<span class="v off">${c.k === 'o' ? '整天休假' : '半天假'}　${c.l || ''}</span>`]);
+  } else if (c.hm) {
+    // 居家：狀態維持「居家」，不改寫成上班中/出勤完整；打卡時刻仍照下面列出來
+    rows.push(['狀態', `🏠 ${c.hm}上班（在家上班，照樣打卡）`]);
   } else if (isWorking(ds, c)) {
     rows.push(['狀態', '上班中（還沒打下班卡）']);
   } else if (c.k === 'w') { rows.push(['狀態', '出勤完整']); }

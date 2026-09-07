@@ -51,11 +51,13 @@
   tr.off{background:#10222b}
   tr.odd td.st{color:var(--warn)}
   tr.live td.st{color:var(--accent)}
+  tr.wfhrow{background:#0e2429}      /* 居家：淡青底，跟休假的 tr.off 分得開 */
   .t{white-space:nowrap}
   .t.bad{color:var(--bad);font-weight:700}
   td.st{white-space:nowrap;font-size:.74rem}
   .lv{color:var(--off)}
   .ev{color:var(--evt)}
+  .wfh{color:#22d3ee}      /* 居家上班：青色，跟休假的藍、人事異動的紅都分得開 */
   tr.evt{background:#22141a}
   .dimtxt{color:var(--dim)}
 
@@ -137,7 +139,7 @@ const weekend = d => wd(d) === 0 || wd(d) === 6;
 function cell(r, d) {
   const c = r.c[d] || [[], [], '-', ''];
   if (d === TODAY && c[2] === 'x' && c[1].every(([t]) => t === '—')) {
-    return [c[0], c[1], 'p', c[3]];
+    return [c[0], c[1], 'p', c[3], c[4]];       // 第 5 欄＝居家字樣，覆寫狀態時要跟著留
   }
   return c;
 }
@@ -150,13 +152,19 @@ function times(list) {
 
 function render() {
   const rows = P.rows.map(r => {
-    const [ins, outs, st, lv] = cell(r, day);
-    const cls = st === 'o' ? ' class="off"' : (st === 'e' ? ' class="evt"'
-      : (st === 'x' ? ' class="odd"' : (st === 'p' ? ' class="live"' : '')));
+    // 第 5 欄（居家）只有居家日才帶
+    const [ins, outs, st, lv, home] = cell(r, day);
+    const cls = home ? ' class="wfhrow"'
+      : (st === 'o' ? ' class="off"' : (st === 'e' ? ' class="evt"'
+      : (st === 'x' ? ' class="odd"' : (st === 'p' ? ' class="live"' : ''))));
     // 到職等人事異動不是休假：'e' 自成一種狀態；其他狀態下有事件就附在後面（到職當天照樣會打卡）
-    const status = st === 'o' ? `<span class="lv">🌴 ${esc(lv || '休假')}</span>`
+    // 居家：狀態欄**維持「居家」**（公司系統本來就這樣標），不改寫成上班中/未完整，
+    // 但上下班兩欄照常帶打卡時刻——居家是在家上班，本來就有卡可打。
+    const status = home ? `<span class="wfh">🏠 ${esc(home)}</span>`
+        + (lv ? ` <span class="ev">📌 ${esc(lv)}</span>` : '')
+      : (st === 'o' ? `<span class="lv">🌴 ${esc(lv || '休假')}</span>`
       : st === 'e' ? `<span class="ev">📌 ${esc(lv || '人事異動')}</span>`
-      : ST[st] + (lv ? ` <span class="ev">📌 ${esc(lv)}</span>` : '');
+      : ST[st] + (lv ? ` <span class="ev">📌 ${esc(lv)}</span>` : ''));
     return `<tr${cls}>
       <th class="nm">${esc(r.n)}<small>${esc(r.t)}</small></th>
       <td>${st === 'o' || st === 'e' ? '<span class="dimtxt">—</span>' : times(ins)}</td>
@@ -165,7 +173,12 @@ function render() {
     </tr>`;
   }).join('');
 
-  const kinds = P.rows.map(r => cell(r, day)[2]);
+  // 居家的人狀態欄顯示的是「居家」，所以不進「上班中/未完整」那幾個計數（不然表頭
+  // 說有人未完整、表格裡卻找不到那一列）。他們照樣算出勤或尚未打卡，另外再標一格居家。
+  const wfhRows = P.rows.filter(r => cell(r, day)[4]);
+  const wfh = wfhRows.length;
+  const wfhOn = wfhRows.filter(r => cell(r, day)[0].length).length;
+  const kinds = P.rows.filter(r => !cell(r, day)[4]).map(r => cell(r, day)[2]);
   const n = k => kinds.filter(x => x === k).length;
   const late = P.rows.filter(r => cell(r, day)[0].some(([, bad]) => bad)).length;
   const early = P.rows.filter(r => cell(r, day)[1].some(([, bad]) => bad)).length;
@@ -191,10 +204,11 @@ function render() {
     </div>
 
     <div class="stat">
-      <span>出勤 <b>${n('w') + n('x') + n('p')}</b></span>
+      <span>出勤 <b>${n('w') + n('x') + n('p') + wfhOn}</b></span>
       <span>休假 <b>${n('o')}</b></span>
-      <span>尚未打卡 <b>${n('n') + n('-')}</b></span>
+      <span>尚未打卡 <b>${n('n') + n('-') + (wfh - wfhOn)}</b></span>
       ${n('e') ? `<span style="color:var(--evt)">人事異動 <b style="color:var(--evt)">${n('e')}</b></span>` : ''}
+      ${wfh ? `<span style="color:#22d3ee">🏠 居家 <b style="color:#22d3ee">${wfh}</b></span>` : ''}
       ${n('p') ? `<span>上班中 <b>${n('p')}</b></span>` : ''}
       ${n('x') ? `<span style="color:var(--warn)">未完整 <b style="color:var(--warn)">${n('x')}</b></span>` : ''}
       ${late ? `<span style="color:var(--bad)">遲到 <b style="color:var(--bad)">${late}</b></span>` : ''}
@@ -211,6 +225,7 @@ function render() {
       <b>紅字</b>＝比排定班別時間晚到／早走　·　⚠️ 未完整＝系統標記打卡異常<br>
       🕒 上班中＝今天打了上班卡、還沒打下班卡<br>
       🌴＝休假　·　<span class="ev">📌＝到職等人事異動（不是休假）</span><br>
+      <span class="wfh">🏠＝居家上班</span>＝在家上班，狀態維持「居家」，但照樣有打卡時刻<br>
       —＝尚未打下班卡　·　左右箭頭或下方日期條可換日
     </div>`;
 
