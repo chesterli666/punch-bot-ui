@@ -77,14 +77,27 @@ function b64bytes(s) {
   const b = atob(s.replace(/-/g, '+').replace(/_/g, '/'));
   return Uint8Array.from(b, c => c.charCodeAt(0));
 }
+async function unz(s) {
+  if (!window.DecompressionStream) throw new Error('NO_DS');
+  const ds = new DecompressionStream('deflate');
+  const buf = await new Response(new Blob([b64bytes(s)]).stream().pipeThrough(ds)).arrayBuffer();
+  return JSON.parse(new TextDecoder().decode(buf));
+}
+/* 資料一律由 bot 帶進來，網頁不碰內網、沒有帳密。兩種帶法：
+   #z=  壓縮後直接塞在網址裡（預設；不依賴任何後端，網址活著就打得開）
+   #t=  網址塞不下時（LINE 的按鈕網址上限 1000 字元，實測 2122 就被 API 退了），
+        改放 bot 本機、網址只帶一個 10 分鐘有效的隨機 token，由這裡去取。
+        取的仍是同一份壓縮字串，所以下面的解法兩邊共用。 */
 async function readPayload() {
-  const z = location.hash.match(/[#&]z=([^&]+)/);
-  if (z) {
-    if (!window.DecompressionStream) throw new Error('NO_DS');
-    const ds = new DecompressionStream('deflate');
-    const buf = await new Response(new Blob([b64bytes(z[1])]).stream().pipeThrough(ds)).arrayBuffer();
-    return JSON.parse(new TextDecoder().decode(buf));
+  const t = location.hash.match(/[#&]t=([^&]+)/);
+  const src = location.hash.match(/[#&]s=([^&]+)/);
+  if (t && src) {
+    const r = await fetch(decodeURIComponent(src[1]) + '/d/' + t[1], { cache: 'no-store' });
+    if (!r.ok) throw new Error(r.status === 404 ? 'DATA_GONE' : 'DATA_' + r.status);
+    return await unz((await r.text()).trim());
   }
+  const z = location.hash.match(/[#&]z=([^&]+)/);
+  if (z) return await unz(z[1]);
   const d = location.hash.match(/[#&]d=([^&]+)/);
   return d ? JSON.parse(new TextDecoder().decode(b64bytes(d[1]))) : null;
 }
