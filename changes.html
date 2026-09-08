@@ -38,6 +38,8 @@
   /* 一列一筆，左緣色條＝變動類型，掃過去就知道哪幾筆是同一種 */
   .row{background:var(--card);border:1px solid var(--line-soft);border-left-width:4px;
        border-radius:8px;padding:7px 10px;margin-bottom:6px}
+  .rng{font-size:13px;font-weight:400;opacity:.75;margin-left:8px}
+  .note{opacity:.7}
   .r1{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
   .kd{font-size:.76rem;font-weight:700}
   .nm{font-size:.84rem;font-weight:700}
@@ -187,8 +189,9 @@ function render() {
     .map(g => `<button class="chip${group === g ? ' on' : ''}" data-g="${esc(g)}">${esc(g)} (${groupCnt[g]})</button>`).join('');
 
   document.getElementById('app').innerHTML = `
-    <h1>${esc(month)} 變動紀錄</h1>
-    <div class="sub">監看器每 15 分鐘偵測　·　本月共 ${mrows.length} 筆　·　<span id="cnt"></span></div>
+    <h1>${esc(month)} 變動紀錄${P.dr ? `<span class="rng">${esc(P.dr[0].slice(8))}–${esc(P.dr[1].slice(8))} 日</span>` : ''}</h1>
+    <div class="sub">監看器每 15 分鐘偵測　·　${P.dr ? '這一段' : '本月'}共 ${mrows.length} 筆　·　<span id="cnt"></span></div>
+    ${P.dr ? `<div class="sub note">這個月的紀錄太多，一次帶不進網址，切成了幾段——同月其他日期在 Telegram 鍵盤上各有一顆鈕。</div>` : ''}
     ${monthChips()}
     <div class="seg">
       <button data-t="all"${tab === 'all' ? ' class="on"' : ''}>全部 (${mrows.length})</button>
